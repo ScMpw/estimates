@@ -6,12 +6,15 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <style>
     body { font-family: sans-serif; background: #f7f8fa; margin: 0; }
-    .container { max-width: 480px; margin: 40px auto; background: #fff; border-radius: 12px; box-shadow: 0 2px 12px #0001; padding: 32px 24px; }
+    .container { max-width: 650px; margin: 40px auto; background: #fff; border-radius: 12px; box-shadow: 0 2px 12px #0001; padding: 32px 24px; }
     h2 { margin-top: 0; }
-    select, input[type=file] { margin: 8px 0 16px 0; }
-    .result { background: #f8f9fa; padding: 18px 16px; border-radius: 8px; margin-top: 32px; }
-    .result b { min-width: 130px; display: inline-block; }
+    input[type=file] { margin: 8px 0 16px 0; }
+    table { border-collapse: collapse; width: 100%; background: #fcfcfc; margin-top: 28px; }
+    th, td { border: 1px solid #ececec; padding: 10px 8px; text-align: left; }
+    th { background: #f4f6f8; }
+    tr:hover { background: #f1f8fa; }
     .footer { color: #777; margin-top: 60px; font-size: 13px; }
+    .notfound { color: #a00; margin: 24px 0 0 0; }
   </style>
 </head>
 <body>
@@ -22,23 +25,11 @@
         <input type="file" id="csvfile" accept=".csv,text/csv" />
       </label>
     </div>
-    <div id="dropdownDiv" style="display:none;">
-      <label>
-        <b>Select Issue:</b>
-        <select id="issueSelect">
-          <option value="">-- Select an Issue --</option>
-        </select>
-      </label>
-    </div>
-    <div id="result" class="result" style="display:none;"></div>
+    <div id="tableDiv"></div>
     <div class="footer">(No data is sent to any server. All processing happens in your browser.)</div>
   </div>
   <script>
-    let csvRows = [];
-    let issues = [];
-
     function parseCSV(text) {
-      // Normalize newlines and split rows
       const lines = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n').filter(l => l.trim() !== "");
       const headers = lines[0].split(",");
       return lines.slice(1).map(line => {
@@ -57,50 +48,67 @@
         let text = evt.target.result;
 
         // Replace decimal commas with points in Std. column (only if needed)
-        // Assume header is on first row and "Std." is the correct field
-        // For maximum safety: replace "," with "." ONLY when followed by a digit (for decimal numbers)
         text = text.replace(/,(\d)/g, '.$1');
 
-        csvRows = parseCSV(text);
+        const csvRows = parseCSV(text);
 
-        // Find unique issue keys (ignore empty)
-        const issueKeys = [...new Set(csvRows.map(r => r["Requirement/Issue"]).filter(k => k))];
-        issues = issueKeys;
-        // Fill dropdown
-        const sel = document.getElementById("issueSelect");
-        sel.innerHTML = '<option value="">-- Select an Issue --</option>' + issueKeys.map(iss => `<option>${iss}</option>`).join('');
-        document.getElementById("dropdownDiv").style.display = 'block';
-        document.getElementById("result").style.display = 'none';
+        // Group by Issue
+        const issuesMap = {};
+        csvRows.forEach(row => {
+          const key = row["Requirement/Issue"];
+          if (!key) return;
+          if (!issuesMap[key]) issuesMap[key] = { totalEffort: 0, storyPoints: null, count: 0 };
+          let val = (row["Std."] || "0").replace(",", ".");
+          let eff = parseFloat(val || "0");
+          if (!isNaN(eff)) issuesMap[key].totalEffort += eff;
+          // Use the first non-empty StoryPoints (assume always same per issue)
+          if (issuesMap[key].storyPoints === null && row["StoryPoints"] !== undefined) {
+            let sp = parseFloat(row["StoryPoints"]);
+            if (!isNaN(sp)) issuesMap[key].storyPoints = sp;
+          }
+          issuesMap[key].count += 1;
+        });
+
+        // Convert to sorted array
+        let issuesArr = Object.entries(issuesMap).map(([key, v]) => ({
+          issue: key,
+          totalEffort: v.totalEffort,
+          storyPoints: v.storyPoints,
+          effortPerSP: (v.storyPoints && v.storyPoints > 0) ? (v.totalEffort / v.storyPoints).toFixed(2) : "–",
+          count: v.count
+        }));
+        issuesArr.sort((a, b) => a.issue.localeCompare(b.issue, undefined, { numeric: true }));
+
+        // Show table
+        const tableDiv = document.getElementById("tableDiv");
+        if (issuesArr.length === 0) {
+          tableDiv.innerHTML = '<div class="notfound">No issues found in file.</div>';
+          return;
+        }
+
+        let html = `<table>
+          <thead>
+            <tr>
+              <th>Issue Key</th>
+              <th>Total Effort (h)</th>
+              <th>Story Points</th>
+              <th>Effort per Story Point</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${issuesArr.map(issue => `
+              <tr>
+                <td>${issue.issue}</td>
+                <td>${issue.totalEffort}</td>
+                <td>${issue.storyPoints !== null ? issue.storyPoints : "–"}</td>
+                <td>${issue.effortPerSP !== "NaN" ? issue.effortPerSP : "–"}</td>
+              </tr>
+            `).join('')}
+          </tbody>
+        </table>`;
+        tableDiv.innerHTML = html;
       };
       reader.readAsText(file, "utf-8");
-    });
-
-    document.getElementById("issueSelect").addEventListener("change", function(e) {
-      const issue = e.target.value;
-      if (!issue) {
-        document.getElementById("result").style.display = 'none';
-        return;
-      }
-
-      // Filter rows for this issue
-      const rows = csvRows.filter(r => r["Requirement/Issue"] === issue);
-      // Sum effort
-      const totalEffort = rows.reduce((sum, row) => {
-        // Try both . and , for decimals
-        const val = (row["Std."] || "0").replace(",", ".");
-        return sum + parseFloat(val || "0");
-      }, 0);
-      // Take first (should always be same)
-      const sp = rows.length ? parseFloat(rows[0]["StoryPoints"] || "0") : null;
-      let effPerSP = (sp > 0) ? (totalEffort / sp).toFixed(2) : '–';
-
-      document.getElementById("result").innerHTML = `
-        <div><b>Issue Key:</b> ${issue}</div>
-        <div><b>Total Effort:</b> ${totalEffort} h</div>
-        <div><b>Story Points:</b> ${sp !== null ? sp : '–'}</div>
-        <div><b>Effort per Story Point:</b> ${effPerSP !== "NaN" ? effPerSP + ' h/SP' : '–'}</div>
-      `;
-      document.getElementById("result").style.display = 'block';
     });
   </script>
 </body>
