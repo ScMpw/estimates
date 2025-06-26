@@ -2,17 +2,21 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>Effort per Issue Viewer</title>
+  <title>Effort per Issue Analysis</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <style>
     body { font-family: sans-serif; background: #f7f8fa; margin: 0; }
-    .container { max-width: 650px; margin: 40px auto; background: #fff; border-radius: 12px; box-shadow: 0 2px 12px #0001; padding: 32px 24px; }
+    .container { max-width: 900px; margin: 40px auto; background: #fff; border-radius: 14px; box-shadow: 0 2px 16px #0001; padding: 32px 24px; }
     h2 { margin-top: 0; }
-    input[type=file] { margin: 8px 0 16px 0; }
-    table { border-collapse: collapse; width: 100%; background: #fcfcfc; margin-top: 28px; }
-    th, td { border: 1px solid #ececec; padding: 10px 8px; text-align: left; }
-    th { background: #f4f6f8; }
-    tr:hover { background: #f1f8fa; }
+    input[type=file] { margin: 8px 0 24px 0; }
+    .chart-block { margin: 32px 0; }
+    details { margin: 0 0 18px 0; background: #f7f8fc; border-radius: 8px; border: 1px solid #eee; }
+    summary { font-weight: bold; padding: 10px 14px; cursor: pointer; outline: none;}
+    .group-list { padding: 0 18px 12px 34px; }
+    .group-list table { width: 100%; border-collapse: collapse; background: #fafbfc; }
+    .group-list th, .group-list td { border: 1px solid #ececec; padding: 7px 6px; text-align: left; }
+    .group-list th { background: #f0f4f9; }
     .footer { color: #777; margin-top: 60px; font-size: 13px; }
     .notfound { color: #a00; margin: 24px 0 0 0; }
     .headers { color: #555; font-size: 13px; margin: 16px 0 0 0; }
@@ -20,17 +24,24 @@
 </head>
 <body>
   <div class="container">
-    <h2>Effort per Issue</h2>
+    <h2>Effort per Issue Analysis</h2>
     <div>
       <label><b>Upload CSV:</b>
         <input type="file" id="csvfile" accept=".csv,text/csv" />
       </label>
     </div>
-    <div id="tableDiv"></div>
     <div id="headerDebug"></div>
+    <div class="chart-block">
+      <canvas id="scatterChart" height="220"></canvas>
+    </div>
+    <div class="chart-block">
+      <canvas id="histogramChart" height="220"></canvas>
+    </div>
+    <div id="groups"></div>
     <div class="footer">(No data is sent to any server. All processing happens in your browser.)</div>
   </div>
   <script>
+    // CSV-Helper
     function detectDelimiter(text) {
       const firstLine = text.split(/\r?\n/)[0];
       const comma = (firstLine.match(/,/g) || []).length;
@@ -65,6 +76,11 @@
       return match ? match[1] : null;
     }
 
+    // Chart holders
+    let scatterChart = null;
+    let histogramChart = null;
+
+    // Main CSV Upload Handling
     document.getElementById("csvfile").addEventListener("change", function(e) {
       const file = e.target.files[0];
       if (!file) return;
@@ -77,7 +93,8 @@
         const csvRows = parseCSV(text, delimiter);
 
         if (!csvRows.length) {
-          document.getElementById("tableDiv").innerHTML = '<div class="notfound">No data rows found.</div>';
+          document.getElementById("groups").innerHTML = '';
+          document.getElementById("headerDebug").innerHTML = '<div class="notfound">No data rows found.</div>';
           return;
         }
 
@@ -90,69 +107,168 @@
           Object.keys(headerMap).map(h => `<code>${headerMap[h]}</code>`).join(', ') + '</div>';
 
         if (!aufgabeKey || !stdKey || !spKey) {
-          document.getElementById("tableDiv").innerHTML =
+          document.getElementById("groups").innerHTML =
             `<div class="notfound">Could not find all required columns ("Aufgabe", "Std.", "StoryPoints")!<br>
             <br>Found columns: <code>${Object.keys(headerMap).map(h => headerMap[h]).join(", ")}</code></div>`;
           return;
         }
 
-        // Group by extracted Issue Key from "Aufgabe"
-        const issuesMap = {};
+        // Group and transform data
+        const issuesArr = [];
+        const groups = {};
         csvRows.forEach(row => {
           const key = extractIssueKey(row[headerMap[aufgabeKey]]);
           if (!key) return;
-          if (!issuesMap[key]) issuesMap[key] = { totalEffort: 0, storyPoints: null, count: 0 };
           let val = (row[headerMap[stdKey]] || "0").replace(",", ".");
           let eff = parseFloat(val || "0");
-          if (!isNaN(eff)) issuesMap[key].totalEffort += eff;
-          // Use first non-empty StoryPoints per issue
-          if (issuesMap[key].storyPoints === null && row[headerMap[spKey]] !== undefined) {
-            let sp = parseFloat(row[headerMap[spKey]]);
-            if (!isNaN(sp)) issuesMap[key].storyPoints = sp;
+          let sp = parseFloat(row[headerMap[spKey]]);
+          // Nur Issues mit SP > 0 (keine Epics)
+          if (!isNaN(sp) && sp > 0) {
+            let found = issuesArr.find(obj => obj.issue === key);
+            if (!found) {
+              found = {
+                issue: key,
+                totalEffort: 0,
+                storyPoints: sp,
+                effortPerSP: 0,
+                rows: []
+              };
+              issuesArr.push(found);
+            }
+            found.totalEffort += isNaN(eff) ? 0 : eff;
+            found.rows.push(row);
           }
-          issuesMap[key].count += 1;
+        });
+        // effortPerSP berechnen, Gruppen bauen
+        issuesArr.forEach(issue => {
+          issue.effortPerSP = (issue.storyPoints && issue.storyPoints > 0) ?
+              (issue.totalEffort / issue.storyPoints) : null;
+          // Gruppieren
+          const sp = issue.storyPoints;
+          if (!groups[sp]) groups[sp] = [];
+          groups[sp].push(issue);
         });
 
-        // Convert to sorted array and filter out all with SP <= 0 or missing
-        let issuesArr = Object.entries(issuesMap)
-          .map(([key, v]) => ({
-            issue: key,
-            totalEffort: v.totalEffort,
-            storyPoints: v.storyPoints,
-            effortPerSP: (v.storyPoints && v.storyPoints > 0) ? (v.totalEffort / v.storyPoints).toFixed(2) : "–",
-            count: v.count
-          }))
-          .filter(issue => issue.storyPoints && issue.storyPoints > 0);
-        issuesArr.sort((a, b) => a.issue.localeCompare(b.issue, undefined, { numeric: true }));
-
-        // Show table
-        const tableDiv = document.getElementById("tableDiv");
-        if (issuesArr.length === 0) {
-          tableDiv.innerHTML = '<div class="notfound">No issues with story points found in file.</div>';
-          return;
+        // Nach Issue Key sortieren, Gruppen sortieren
+        for (const sp in groups) {
+          groups[sp].sort((a, b) => a.issue.localeCompare(b.issue, undefined, { numeric: true }));
         }
 
-        let html = `<table>
-          <thead>
-            <tr>
-              <th>Issue Key</th>
-              <th>Total Effort (h)</th>
-              <th>Story Points</th>
-              <th>Effort per Story Point</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${issuesArr.map(issue => `
-              <tr>
-                <td>${issue.issue}</td>
-                <td>${issue.totalEffort}</td>
-                <td>${issue.storyPoints !== null ? issue.storyPoints : "–"}</td>
-                <td>${issue.effortPerSP !== "NaN" ? issue.effortPerSP : "–"}</td>
-              </tr>
-            `).join('')}
-          </tbody>
-        </table>`;
-        tableDiv.innerHTML = html;
+        // -- 1. Scatterplot: Story Points (x) vs. Effort (y) --
+        const scatterData = issuesArr.map(issue => ({
+          x: issue.storyPoints,
+          y: issue.totalEffort,
+          issue: issue.issue
+        }));
+        if (scatterChart) scatterChart.destroy();
+        scatterChart = new Chart(document.getElementById("scatterChart").getContext("2d"), {
+          type: "scatter",
+          data: {
+            datasets: [{
+              label: "Issues",
+              data: scatterData,
+              pointRadius: 6,
+              pointHoverRadius: 9,
+              backgroundColor: "rgba(60,120,216,0.7)",
+              borderColor: "#3463ad",
+            }]
+          },
+          options: {
+            plugins: {
+              tooltip: {
+                callbacks: {
+                  label: (ctx) =>
+                    `Issue: ${ctx.raw.issue}\nStory Points: ${ctx.raw.x}\nEffort: ${ctx.raw.y} h`
+                }
+              },
+              legend: { display: false }
+            },
+            scales: {
+              x: {
+                type: "linear",
+                title: { display: true, text: "Story Points" },
+                beginAtZero: true
+              },
+              y: {
+                title: { display: true, text: "Total Effort (h)" },
+                beginAtZero: true
+              }
+            }
+          }
+        });
+
+        // -- 2. Histogramm: Effort per Story Point --
+        const effortPerSPs = issuesArr
+          .map(i => i.effortPerSP)
+          .filter(v => v !== null && !isNaN(v));
+        // Bin Histogramme automatisch (z.B. 8 bins)
+        const bins = 8;
+        const minV = Math.min(...effortPerSPs);
+        const maxV = Math.max(...effortPerSPs);
+        const step = (maxV - minV) / bins;
+        const histBins = new Array(bins).fill(0);
+        effortPerSPs.forEach(v => {
+          let idx = Math.floor((v - minV) / step);
+          if (idx >= bins) idx = bins - 1;
+          histBins[idx]++;
+        });
+        const histLabels = [];
+        for (let i = 0; i < bins; i++) {
+          const from = (minV + i * step).toFixed(2);
+          const to = (minV + (i + 1) * step).toFixed(2);
+          histLabels.push(`${from}–${to}`);
+        }
+        if (histogramChart) histogramChart.destroy();
+        histogramChart = new Chart(document.getElementById("histogramChart").getContext("2d"), {
+          type: "bar",
+          data: {
+            labels: histLabels,
+            datasets: [{
+              label: "Issues",
+              data: histBins,
+              backgroundColor: "rgba(60,120,216,0.45)"
+            }]
+          },
+          options: {
+            plugins: {
+              legend: { display: false }
+            },
+            scales: {
+              x: { title: { display: true, text: "Effort per Story Point (h/SP)" }},
+              y: { title: { display: true, text: "Number of Issues" }, beginAtZero: true }
+            }
+          }
+        });
+
+        // -- 3. Gruppierung: Ausklappbar nach Story Points --
+        let groupsHtml = "";
+        Object.keys(groups).sort((a,b)=>a-b).forEach(sp => {
+          const list = groups[sp];
+          groupsHtml += `<details>
+            <summary>${sp} Story Point${sp==1?'':'s'} <span style="font-weight:normal;color:#567">(${list.length} Issues)</span></summary>
+            <div class="group-list">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Issue Key</th>
+                    <th>Total Effort (h)</th>
+                    <th>Effort per Story Point</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${list.map(issue => `
+                    <tr>
+                      <td>${issue.issue}</td>
+                      <td>${issue.totalEffort.toFixed(2)}</td>
+                      <td>${issue.effortPerSP !== null ? issue.effortPerSP.toFixed(2) : "–"}</td>
+                    </tr>
+                  `).join('')}
+                </tbody>
+              </table>
+            </div>
+          </details>`;
+        });
+        document.getElementById("groups").innerHTML = groupsHtml;
       };
       reader.readAsText(file, "utf-8");
     });
