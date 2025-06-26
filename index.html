@@ -15,29 +15,52 @@
     tr:hover { background: #f1f8fa; }
     .footer { color: #777; margin-top: 60px; font-size: 13px; }
     .notfound { color: #a00; margin: 24px 0 0 0; }
+    .headers { color: #555; font-size: 13px; margin: 16px 0 0 0; }
   </style>
 </head>
 <body>
   <div class="container">
     <h2>Effort per Issue</h2>
     <div>
-      <label><b>Upload CSV:</b> 
+      <label><b>Upload CSV:</b>
         <input type="file" id="csvfile" accept=".csv,text/csv" />
       </label>
     </div>
     <div id="tableDiv"></div>
+    <div id="headerDebug"></div>
     <div class="footer">(No data is sent to any server. All processing happens in your browser.)</div>
   </div>
   <script>
-    function parseCSV(text) {
+    function detectDelimiter(text) {
+      // Check first line for ; or ,
+      const firstLine = text.split(/\r?\n/)[0];
+      const comma = (firstLine.match(/,/g) || []).length;
+      const semicolon = (firstLine.match(/;/g) || []).length;
+      return semicolon > comma ? ";" : ",";
+    }
+
+    function parseCSV(text, delimiter) {
+      // Split lines, ignore empty
       const lines = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n').filter(l => l.trim() !== "");
-      const headers = lines[0].split(",");
+      // Use delimiter
+      const headers = lines[0].split(delimiter).map(h => h.trim());
       return lines.slice(1).map(line => {
-        const values = line.split(",");
+        const values = line.split(delimiter);
         const obj = {};
-        headers.forEach((h, i) => obj[h.trim()] = (values[i] || "").trim());
+        headers.forEach((h, i) => obj[h] = (values[i] || "").trim());
         return obj;
       });
+    }
+
+    function normalizeHeaders(row) {
+      // lowercase, remove spaces, remove special chars (ä=ae, ü=ue, ö=oe, ß=ss)
+      const map = {};
+      for (const k in row) {
+        let norm = k.toLowerCase().replace(/\s+/g, "");
+        norm = norm.replace(/[ä]/g, "ae").replace(/[ü]/g, "ue").replace(/[ö]/g, "oe").replace(/[ß]/g, "ss");
+        map[norm] = k;
+      }
+      return map;
     }
 
     function extractIssueKey(aufgabe) {
@@ -53,22 +76,45 @@
       const reader = new FileReader();
       reader.onload = function(evt) {
         let text = evt.target.result;
-        // Replace decimal commas with points in Std. column (only if needed)
-        text = text.replace(/,(\d)/g, '.$1');
-        const csvRows = parseCSV(text);
+        text = text.replace(/,(\d)/g, '.$1'); // Convert decimal commas
+
+        const delimiter = detectDelimiter(text);
+        const csvRows = parseCSV(text, delimiter);
+
+        if (!csvRows.length) {
+          document.getElementById("tableDiv").innerHTML = '<div class="notfound">No data rows found.</div>';
+          return;
+        }
+
+        // Header-Normalisierung (finde die Spalten)
+        const headerMap = normalizeHeaders(csvRows[0]);
+        const aufgabeKey = Object.keys(headerMap).find(k => k.startsWith("aufgabe"));
+        const stdKey = Object.keys(headerMap).find(k => k.startsWith("std"));
+        const spKey = Object.keys(headerMap).find(k => k.startsWith("storypoints"));
+
+        // Debug: Zeige alle Header
+        document.getElementById("headerDebug").innerHTML = '<div class="headers">Detected columns: ' +
+          Object.keys(headerMap).map(h => `<code>${headerMap[h]}</code>`).join(', ') + '</div>';
+
+        if (!aufgabeKey || !stdKey || !spKey) {
+          document.getElementById("tableDiv").innerHTML =
+            `<div class="notfound">Could not find all required columns ("Aufgabe", "Std.", "StoryPoints")!<br>
+            <br>Found columns: <code>${Object.keys(headerMap).map(h => headerMap[h]).join(", ")}</code></div>`;
+          return;
+        }
 
         // Group by extracted Issue Key from "Aufgabe"
         const issuesMap = {};
         csvRows.forEach(row => {
-          const key = extractIssueKey(row["Aufgabe"]);
+          const key = extractIssueKey(row[headerMap[aufgabeKey]]);
           if (!key) return;
           if (!issuesMap[key]) issuesMap[key] = { totalEffort: 0, storyPoints: null, count: 0 };
-          let val = (row["Std."] || "0").replace(",", ".");
+          let val = (row[headerMap[stdKey]] || "0").replace(",", ".");
           let eff = parseFloat(val || "0");
           if (!isNaN(eff)) issuesMap[key].totalEffort += eff;
           // Use first non-empty StoryPoints per issue
-          if (issuesMap[key].storyPoints === null && row["StoryPoints"] !== undefined) {
-            let sp = parseFloat(row["StoryPoints"]);
+          if (issuesMap[key].storyPoints === null && row[headerMap[spKey]] !== undefined) {
+            let sp = parseFloat(row[headerMap[spKey]]);
             if (!isNaN(sp)) issuesMap[key].storyPoints = sp;
           }
           issuesMap[key].count += 1;
