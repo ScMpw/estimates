@@ -32,7 +32,6 @@
   </div>
   <script>
     function detectDelimiter(text) {
-      // Check first line for ; or ,
       const firstLine = text.split(/\r?\n/)[0];
       const comma = (firstLine.match(/,/g) || []).length;
       const semicolon = (firstLine.match(/;/g) || []).length;
@@ -40,9 +39,7 @@
     }
 
     function parseCSV(text, delimiter) {
-      // Split lines, ignore empty
       const lines = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n').filter(l => l.trim() !== "");
-      // Use delimiter
       const headers = lines[0].split(delimiter).map(h => h.trim());
       return lines.slice(1).map(line => {
         const values = line.split(delimiter);
@@ -53,7 +50,6 @@
     }
 
     function normalizeHeaders(row) {
-      // lowercase, remove spaces, remove special chars (ä=ae, ü=ue, ö=oe, ß=ss)
       const map = {};
       for (const k in row) {
         let norm = k.toLowerCase().replace(/\s+/g, "");
@@ -64,7 +60,6 @@
     }
 
     function extractIssueKey(aufgabe) {
-      // Holt z.B. "BF-392" aus "BF-392: irgendwas"
       if (!aufgabe) return null;
       const match = aufgabe.match(/^([A-Z]+-\d+)/i);
       return match ? match[1] : null;
@@ -86,13 +81,11 @@
           return;
         }
 
-        // Header-Normalisierung (finde die Spalten)
         const headerMap = normalizeHeaders(csvRows[0]);
         const aufgabeKey = Object.keys(headerMap).find(k => k.startsWith("aufgabe"));
         const stdKey = Object.keys(headerMap).find(k => k.startsWith("std"));
         const spKey = Object.keys(headerMap).find(k => k.startsWith("storypoints"));
 
-        // Debug: Zeige alle Header
         document.getElementById("headerDebug").innerHTML = '<div class="headers">Detected columns: ' +
           Object.keys(headerMap).map(h => `<code>${headerMap[h]}</code>`).join(', ') + '</div>';
 
@@ -120,20 +113,22 @@
           issuesMap[key].count += 1;
         });
 
-        // Convert to sorted array
-        let issuesArr = Object.entries(issuesMap).map(([key, v]) => ({
-          issue: key,
-          totalEffort: v.totalEffort,
-          storyPoints: v.storyPoints,
-          effortPerSP: (v.storyPoints && v.storyPoints > 0) ? (v.totalEffort / v.storyPoints).toFixed(2) : "–",
-          count: v.count
-        }));
+        // Convert to sorted array and filter out all with SP <= 0 or missing
+        let issuesArr = Object.entries(issuesMap)
+          .map(([key, v]) => ({
+            issue: key,
+            totalEffort: v.totalEffort,
+            storyPoints: v.storyPoints,
+            effortPerSP: (v.storyPoints && v.storyPoints > 0) ? (v.totalEffort / v.storyPoints).toFixed(2) : "–",
+            count: v.count
+          }))
+          .filter(issue => issue.storyPoints && issue.storyPoints > 0);
         issuesArr.sort((a, b) => a.issue.localeCompare(b.issue, undefined, { numeric: true }));
 
         // Show table
         const tableDiv = document.getElementById("tableDiv");
         if (issuesArr.length === 0) {
-          tableDiv.innerHTML = '<div class="notfound">No issues found in file.</div>';
+          tableDiv.innerHTML = '<div class="notfound">No issues with story points found in file.</div>';
           return;
         }
 
