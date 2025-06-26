@@ -40,28 +40,33 @@
       });
     }
 
+    function extractIssueKey(aufgabe) {
+      // Holt z.B. "BF-392" aus "BF-392: irgendwas"
+      if (!aufgabe) return null;
+      const match = aufgabe.match(/^([A-Z]+-\d+)/i);
+      return match ? match[1] : null;
+    }
+
     document.getElementById("csvfile").addEventListener("change", function(e) {
       const file = e.target.files[0];
       if (!file) return;
       const reader = new FileReader();
       reader.onload = function(evt) {
         let text = evt.target.result;
-
         // Replace decimal commas with points in Std. column (only if needed)
         text = text.replace(/,(\d)/g, '.$1');
-
         const csvRows = parseCSV(text);
 
-        // Group by Issue
+        // Group by extracted Issue Key from "Aufgabe"
         const issuesMap = {};
         csvRows.forEach(row => {
-          const key = row["Requirement/Issue"];
+          const key = extractIssueKey(row["Aufgabe"]);
           if (!key) return;
           if (!issuesMap[key]) issuesMap[key] = { totalEffort: 0, storyPoints: null, count: 0 };
           let val = (row["Std."] || "0").replace(",", ".");
           let eff = parseFloat(val || "0");
           if (!isNaN(eff)) issuesMap[key].totalEffort += eff;
-          // Use the first non-empty StoryPoints (assume always same per issue)
+          // Use first non-empty StoryPoints per issue
           if (issuesMap[key].storyPoints === null && row["StoryPoints"] !== undefined) {
             let sp = parseFloat(row["StoryPoints"]);
             if (!isNaN(sp)) issuesMap[key].storyPoints = sp;
