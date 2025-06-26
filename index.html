@@ -7,16 +7,16 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <style>
     body { font-family: sans-serif; background: #f7f8fa; margin: 0; }
-    .container { max-width: 900px; margin: 40px auto; background: #fff; border-radius: 14px; box-shadow: 0 2px 16px #0001; padding: 32px 24px; }
+    .container { max-width: 950px; margin: 40px auto; background: #fff; border-radius: 14px; box-shadow: 0 2px 16px #0001; padding: 32px 24px; }
     h2 { margin-top: 0; }
     input[type=file] { margin: 8px 0 24px 0; }
     .chart-block { margin: 32px 0; }
     details { margin: 0 0 18px 0; background: #f7f8fc; border-radius: 8px; border: 1px solid #eee; }
     summary { font-weight: bold; padding: 10px 14px; cursor: pointer; outline: none;}
     .group-list { padding: 0 18px 12px 34px; }
-    .group-list table { width: 100%; border-collapse: collapse; background: #fafbfc; }
-    .group-list th, .group-list td { border: 1px solid #ececec; padding: 7px 6px; text-align: left; }
-    .group-list th { background: #f0f4f9; }
+    .group-list table, .average-table { width: 100%; border-collapse: collapse; background: #fafbfc; }
+    .group-list th, .group-list td, .average-table th, .average-table td { border: 1px solid #ececec; padding: 7px 6px; text-align: left; }
+    .group-list th, .average-table th { background: #f0f4f9; }
     .footer { color: #777; margin-top: 60px; font-size: 13px; }
     .notfound { color: #a00; margin: 24px 0 0 0; }
     .headers { color: #555; font-size: 13px; margin: 16px 0 0 0; }
@@ -32,16 +32,19 @@
     </div>
     <div id="headerDebug"></div>
     <div class="chart-block">
+      <canvas id="pieChart" height="140"></canvas>
+    </div>
+    <div class="chart-block">
       <canvas id="scatterChart" height="220"></canvas>
     </div>
     <div class="chart-block">
       <canvas id="histogramChart" height="220"></canvas>
     </div>
+    <div class="chart-block" id="avgEffortDiv"></div>
     <div id="groups"></div>
     <div class="footer">(No data is sent to any server. All processing happens in your browser.)</div>
   </div>
   <script>
-    // CSV-Helper
     function detectDelimiter(text) {
       const firstLine = text.split(/\r?\n/)[0];
       const comma = (firstLine.match(/,/g) || []).length;
@@ -76,11 +79,10 @@
       return match ? match[1] : null;
     }
 
-    // Chart holders
     let scatterChart = null;
     let histogramChart = null;
+    let pieChart = null;
 
-    // Main CSV Upload Handling
     document.getElementById("csvfile").addEventListener("change", function(e) {
       const file = e.target.files[0];
       if (!file) return;
@@ -113,7 +115,7 @@
           return;
         }
 
-        // Group and transform data
+        // --- 1. Datenstruktur: ---
         const issuesArr = [];
         const groups = {};
         csvRows.forEach(row => {
@@ -122,7 +124,6 @@
           let val = (row[headerMap[stdKey]] || "0").replace(",", ".");
           let eff = parseFloat(val || "0");
           let sp = parseFloat(row[headerMap[spKey]]);
-          // Nur Issues mit SP > 0 (keine Epics)
           if (!isNaN(sp) && sp > 0) {
             let found = issuesArr.find(obj => obj.issue === key);
             if (!found) {
@@ -139,7 +140,7 @@
             found.rows.push(row);
           }
         });
-        // effortPerSP berechnen, Gruppen bauen
+        // effortPerSP und Gruppen berechnen
         issuesArr.forEach(issue => {
           issue.effortPerSP = (issue.storyPoints && issue.storyPoints > 0) ?
               (issue.totalEffort / issue.storyPoints) : null;
@@ -149,12 +150,40 @@
           groups[sp].push(issue);
         });
 
-        // Nach Issue Key sortieren, Gruppen sortieren
-        for (const sp in groups) {
-          groups[sp].sort((a, b) => a.issue.localeCompare(b.issue, undefined, { numeric: true }));
-        }
+        // --- 2. Pie Chart: Verteilung der Story Points ---
+        const storyPointCounts = {};
+        issuesArr.forEach(issue => {
+          const sp = issue.storyPoints;
+          if (!storyPointCounts[sp]) storyPointCounts[sp] = 0;
+          storyPointCounts[sp]++;
+        });
+        const pieLabels = Object.keys(storyPointCounts).sort((a, b) => Number(a) - Number(b));
+        const pieData = pieLabels.map(l => storyPointCounts[l]);
+        if (pieChart) pieChart.destroy();
+        pieChart = new Chart(document.getElementById("pieChart").getContext("2d"), {
+          type: "pie",
+          data: {
+            labels: pieLabels.map(l => `${l} SP`),
+            datasets: [{
+              data: pieData,
+              backgroundColor: [
+                "#3c78d8", "#6fa8dc", "#b4a7d6", "#ffd966", "#93c47d", "#f6b26b", "#e06666", "#76a5af"
+              ]
+            }]
+          },
+          options: {
+            plugins: {
+              legend: { display: true, position: "bottom" },
+              tooltip: {
+                callbacks: {
+                  label: (ctx) => `${ctx.label}: ${ctx.parsed} Issues`
+                }
+              }
+            }
+          }
+        });
 
-        // -- 1. Scatterplot: Story Points (x) vs. Effort (y) --
+        // --- 3. Scatterplot: Story Points (x) vs. Effort (y) ---
         const scatterData = issuesArr.map(issue => ({
           x: issue.storyPoints,
           y: issue.totalEffort,
@@ -197,11 +226,10 @@
           }
         });
 
-        // -- 2. Histogramm: Effort per Story Point --
+        // --- 4. Histogramm: Effort per Story Point ---
         const effortPerSPs = issuesArr
           .map(i => i.effortPerSP)
           .filter(v => v !== null && !isNaN(v));
-        // Bin Histogramme automatisch (z.B. 8 bins)
         const bins = 8;
         const minV = Math.min(...effortPerSPs);
         const maxV = Math.max(...effortPerSPs);
@@ -240,7 +268,32 @@
           }
         });
 
-        // -- 3. Gruppierung: Ausklappbar nach Story Points --
+        // --- 5. Average Table: Durchschnitt pro Estimate ---
+        let avgEffortHtml = `<div style="margin-top:12px;"><b>Average Total Effort per Estimate</b></div>
+        <table class="average-table" style="margin-top:8px;">
+          <thead>
+            <tr>
+              <th>Story Points</th>
+              <th>Number of Issues</th>
+              <th>Average Total Effort (h)</th>
+            </tr>
+          </thead>
+          <tbody>`;
+        pieLabels.forEach(sp => {
+          const issues = groups[sp] || [];
+          const avg = issues.length ? (issues.reduce((s, i) => s + i.totalEffort, 0) / issues.length).toFixed(2) : "–";
+          avgEffortHtml += `
+            <tr>
+              <td>${sp}</td>
+              <td>${issues.length}</td>
+              <td>${avg}</td>
+            </tr>
+          `;
+        });
+        avgEffortHtml += `</tbody></table>`;
+        document.getElementById("avgEffortDiv").innerHTML = avgEffortHtml;
+
+        // --- 6. Gruppierung: Ausklappbar nach Story Points ---
         let groupsHtml = "";
         Object.keys(groups).sort((a,b)=>a-b).forEach(sp => {
           const list = groups[sp];
