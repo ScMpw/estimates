@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Effort per Issue Viewer</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <style>
+    body { font-family: sans-serif; background: #f7f8fa; margin: 0; }
+    .container { max-width: 480px; margin: 40px auto; background: #fff; border-radius: 12px; box-shadow: 0 2px 12px #0001; padding: 32px 24px; }
+    h2 { margin-top: 0; }
+    select, input[type=file] { margin: 8px 0 16px 0; }
+    .result { background: #f8f9fa; padding: 18px 16px; border-radius: 8px; margin-top: 32px; }
+    .result b { min-width: 130px; display: inline-block; }
+    .footer { color: #777; margin-top: 60px; font-size: 13px; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h2>Effort per Issue</h2>
+    <div>
+      <label><b>Upload CSV:</b> 
+        <input type="file" id="csvfile" accept=".csv,text/csv" />
+      </label>
+    </div>
+    <div id="dropdownDiv" style="display:none;">
+      <label>
+        <b>Select Issue:</b>
+        <select id="issueSelect">
+          <option value="">-- Select an Issue --</option>
+        </select>
+      </label>
+    </div>
+    <div id="result" class="result" style="display:none;"></div>
+    <div class="footer">(No data is sent to any server. All processing happens in your browser.)</div>
+  </div>
+  <script>
+    let csvRows = [];
+    let issues = [];
+
+    function parseCSV(text) {
+      // Normalize newlines and split rows
+      const lines = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n').filter(l => l.trim() !== "");
+      const headers = lines[0].split(",");
+      return lines.slice(1).map(line => {
+        const values = line.split(",");
+        const obj = {};
+        headers.forEach((h, i) => obj[h.trim()] = (values[i] || "").trim());
+        return obj;
+      });
+    }
+
+    document.getElementById("csvfile").addEventListener("change", function(e) {
+      const file = e.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = function(evt) {
+        let text = evt.target.result;
+
+        // Replace decimal commas with points in Std. column (only if needed)
+        // Assume header is on first row and "Std." is the correct field
+        // For maximum safety: replace "," with "." ONLY when followed by a digit (for decimal numbers)
+        text = text.replace(/,(\d)/g, '.$1');
+
+        csvRows = parseCSV(text);
+
+        // Find unique issue keys (ignore empty)
+        const issueKeys = [...new Set(csvRows.map(r => r["Requirement/Issue"]).filter(k => k))];
+        issues = issueKeys;
+        // Fill dropdown
+        const sel = document.getElementById("issueSelect");
+        sel.innerHTML = '<option value="">-- Select an Issue --</option>' + issueKeys.map(iss => `<option>${iss}</option>`).join('');
+        document.getElementById("dropdownDiv").style.display = 'block';
+        document.getElementById("result").style.display = 'none';
+      };
+      reader.readAsText(file, "utf-8");
+    });
+
+    document.getElementById("issueSelect").addEventListener("change", function(e) {
+      const issue = e.target.value;
+      if (!issue) {
+        document.getElementById("result").style.display = 'none';
+        return;
+      }
+
+      // Filter rows for this issue
+      const rows = csvRows.filter(r => r["Requirement/Issue"] === issue);
+      // Sum effort
+      const totalEffort = rows.reduce((sum, row) => {
+        // Try both . and , for decimals
+        const val = (row["Std."] || "0").replace(",", ".");
+        return sum + parseFloat(val || "0");
+      }, 0);
+      // Take first (should always be same)
+      const sp = rows.length ? parseFloat(rows[0]["StoryPoints"] || "0") : null;
+      let effPerSP = (sp > 0) ? (totalEffort / sp).toFixed(2) : '–';
+
+      document.getElementById("result").innerHTML = `
+        <div><b>Issue Key:</b> ${issue}</div>
+        <div><b>Total Effort:</b> ${totalEffort} h</div>
+        <div><b>Story Points:</b> ${sp !== null ? sp : '–'}</div>
+        <div><b>Effort per Story Point:</b> ${effPerSP !== "NaN" ? effPerSP + ' h/SP' : '–'}</div>
+      `;
+      document.getElementById("result").style.display = 'block';
+    });
+  </script>
+</body>
+</html>
