@@ -323,11 +323,11 @@
         const aufgabeKey = Object.keys(headerMap).find(k => k.startsWith("aufgabe"));
         const stdKey = Object.keys(headerMap).find(k => k.startsWith("std"));
         const spKey = Object.keys(headerMap).find(k => k.startsWith("storypoints"));
-        // Robust: Epic-Referenz unabhängig von Bindestrichen, Leerzeichen, Groß/Kleinschreibung
         const epicKey = Object.keys(headerMap).find(
           k => k.replace(/[^a-z]/gi,'').includes('epicreferenz')
         );
-        const teamKey = Object.keys(headerMap).find(k => k.replace(/\s+/g, '').toLowerCase() === 'team');
+        // ***** Nur die echte Team-Spalte ("Team") *****
+        const teamKey = Object.keys(headerMap).find(k => headerMap[k].trim().toLowerCase() === 'team');
         const dateKey = Object.keys(headerMap).find(k => k.startsWith("tag"));
 
         document.getElementById("headerDebug").innerHTML = '<div class="headers">Detected columns: ' +
@@ -361,7 +361,7 @@
                 effortPerSP: 0,
                 rows: [],
                 epic: epicKey ? row[headerMap[epicKey]] : "",
-                team: teamKey ? row[headerMap[teamKey]] : "",
+                team: teamKey ? row[headerMap[teamKey]] : "", // Nur die echte Team-Spalte!
                 date: dateKey ? row[headerMap[dateKey]] : "",
                 task: row[headerMap[aufgabeKey]]
               };
@@ -379,9 +379,10 @@
           allGroups[sp].push(issue);
         });
 
-        // Fill filter dropdowns
-        const epicVals = Array.from(new Set(allIssuesArr.map(i => i.epic).filter(Boolean))).sort();
+        // Team-Filter: Nur Werte aus der echten Team-Spalte!
         const teamVals = Array.from(new Set(allIssuesArr.map(i => i.team).filter(Boolean))).sort();
+        // Epic-Filter bleibt wie gehabt
+        const epicVals = Array.from(new Set(allIssuesArr.map(i => i.epic).filter(Boolean))).sort();
         fillSelectOptions(document.getElementById("epicFilter"), epicVals);
         fillSelectOptions(document.getElementById("teamFilter"), teamVals);
 
