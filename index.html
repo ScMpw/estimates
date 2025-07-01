@@ -209,8 +209,18 @@
         }
       });
 
-      // Average Table
-      let avgEffortHtml = `<div style="margin-top:12px;"><b>Average Total Effort per Estimate</b></div>
+        // Average Table
+       // Summary Numbers
+      const totalStories = filteredIssues.length;
+      const totalEffort = filteredIssues.reduce((sum, i) => sum + i.totalEffort, 0).toFixed(2);
+      
+      let avgEffortHtml = `
+      <div style="margin:12px 0 12px 0;">
+        <b>Summary</b><br>
+        <span>Total Number of Stories: <b>${totalStories}</b></span><br>
+        <span>Total Effort (h): <b>${totalEffort}</b></span>
+      </div>
+      <div style="margin-top:12px;"><b>Average Total Effort per Estimate</b></div>
       <table class="average-table" style="margin-top:8px;">
         <thead>
           <tr>
@@ -220,6 +230,7 @@
           </tr>
         </thead>
         <tbody>`;
+
       pieLabels.forEach(sp => {
         const issues = filteredIssues.filter(i => i.storyPoints == sp);
         const avg = issues.length ? (issues.reduce((s, i) => s + i.totalEffort, 0) / issues.length).toFixed(2) : "–";
