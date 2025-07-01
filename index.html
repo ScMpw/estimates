@@ -327,7 +327,7 @@
         const epicKey = Object.keys(headerMap).find(
           k => k.replace(/[^a-z]/gi,'').includes('epicreferenz')
         );
-        const teamKey = Object.keys(headerMap).find(k => k.startsWith("team"));
+        const teamKey = Object.keys(headerMap).find(k => k.replace(/\s+/g, '').toLowerCase() === 'team');
         const dateKey = Object.keys(headerMap).find(k => k.startsWith("tag"));
 
         document.getElementById("headerDebug").innerHTML = '<div class="headers">Detected columns: ' +
