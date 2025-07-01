@@ -7,10 +7,12 @@
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <style>
     body { font-family: sans-serif; background: #f7f8fa; margin: 0; }
-    .container { max-width: 950px; margin: 40px auto; background: #fff; border-radius: 14px; box-shadow: 0 2px 16px #0001; padding: 32px 24px; }
+    .container { max-width: 1000px; margin: 40px auto; background: #fff; border-radius: 14px; box-shadow: 0 2px 16px #0001; padding: 32px 24px; }
     h2 { margin-top: 0; }
-    input[type=file] { margin: 8px 0 24px 0; }
+    input[type=file], select, input[type="date"] { margin: 8px 0 16px 0; }
     .chart-block { margin: 32px 0; }
+    .filter-block { margin: 18px 0 30px 0; background: #f6f6fa; padding: 15px 16px 2px 16px; border-radius: 10px; }
+    .filter-block label { margin-right: 14px; }
     details { margin: 0 0 18px 0; background: #f7f8fc; border-radius: 8px; border: 1px solid #eee; }
     summary { font-weight: bold; padding: 10px 14px; cursor: pointer; outline: none;}
     .group-list { padding: 0 18px 12px 34px; }
@@ -20,6 +22,8 @@
     .footer { color: #777; margin-top: 60px; font-size: 13px; }
     .notfound { color: #a00; margin: 24px 0 0 0; }
     .headers { color: #555; font-size: 13px; margin: 16px 0 0 0; }
+    .search-block { margin: 18px 0 0 0; }
+    .search-block input { width: 230px; padding: 6px 8px; font-size: 1em;}
   </style>
 </head>
 <body>
@@ -31,27 +35,51 @@
       </label>
     </div>
     <div id="headerDebug"></div>
+    <div id="filterPanel" class="filter-block" style="display:none;">
+      <form id="filterForm" onsubmit="return false;">
+        <label>
+          <b>Epics:</b>
+          <select id="epicFilter" multiple size="1"></select>
+        </label>
+        <label>
+          <b>Team:</b>
+          <select id="teamFilter" multiple size="1"></select>
+        </label>
+        <label>
+          <b>Date from:</b>
+          <input type="date" id="fromDate">
+        </label>
+        <label>
+          <b>to:</b>
+          <input type="date" id="toDate">
+        </label>
+        <button id="clearFilters" type="button" style="margin-left:14px;">Clear Filters</button>
+      </form>
+    </div>
     <div class="chart-block">
       <canvas id="pieChart" height="140"></canvas>
     </div>
     <div class="chart-block">
       <canvas id="scatterChart" height="220"></canvas>
     </div>
-    <div class="chart-block">
-      <canvas id="histogramChart" height="220"></canvas>
-    </div>
     <div class="chart-block" id="avgEffortDiv"></div>
+    <div class="search-block" id="searchBlock" style="display:none;">
+      <label>
+        <b>Search Issue/Task:</b>
+        <input type="text" id="searchInput" placeholder="Find by Issue Key or Task...">
+      </label>
+    </div>
     <div id="groups"></div>
     <div class="footer">(No data is sent to any server. All processing happens in your browser.)</div>
   </div>
   <script>
+    // Helper: Delimiter detection, CSV, Header normalizing, Issue key extraction
     function detectDelimiter(text) {
       const firstLine = text.split(/\r?\n/)[0];
       const comma = (firstLine.match(/,/g) || []).length;
       const semicolon = (firstLine.match(/;/g) || []).length;
       return semicolon > comma ? ";" : ",";
     }
-
     function parseCSV(text, delimiter) {
       const lines = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n').filter(l => l.trim() !== "");
       const headers = lines[0].split(delimiter).map(h => h.trim());
@@ -62,7 +90,6 @@
         return obj;
       });
     }
-
     function normalizeHeaders(row) {
       const map = {};
       for (const k in row) {
@@ -72,17 +99,214 @@
       }
       return map;
     }
-
     function extractIssueKey(aufgabe) {
       if (!aufgabe) return null;
       const match = aufgabe.match(/^([A-Z]+-\d+)/i);
       return match ? match[1] : null;
     }
-
+    // Global Data
+    let allIssuesArr = [];
+    let allGroups = {};
+    let allRows = [];
+    let filterFields = {};
     let scatterChart = null;
-    let histogramChart = null;
     let pieChart = null;
 
+    // UI Helper für Filter
+    function fillSelectOptions(sel, list) {
+      sel.innerHTML = list.map(v => `<option value="${v}">${v}</option>`).join('');
+      sel.size = Math.min(list.length, 8);
+    }
+    function parseDate(str) {
+      if (!str) return null;
+      // Try ISO, or dd.mm.yyyy, or dd/mm/yyyy, or yyyy-mm-dd
+      let d = new Date(str);
+      if (!isNaN(d)) return d;
+      if (/^\d{2}\.\d{2}\.\d{4}/.test(str)) {
+        const [day,mon,yr] = str.split('.');
+        return new Date(`${yr}-${mon}-${day}`);
+      }
+      if (/^\d{2}\/\d{2}\/\d{4}/.test(str)) {
+        const [day,mon,yr] = str.split('/');
+        return new Date(`${yr}-${mon}-${day}`);
+      }
+      return null;
+    }
+
+    // Hauptfunktion zur Darstellung & Filterung
+    function renderFiltered(filteredIssues, groups, headerMap, searchValue = "") {
+      // Pie Chart
+      const storyPointCounts = {};
+      filteredIssues.forEach(issue => {
+        const sp = issue.storyPoints;
+        if (!storyPointCounts[sp]) storyPointCounts[sp] = 0;
+        storyPointCounts[sp]++;
+      });
+      const pieLabels = Object.keys(storyPointCounts).sort((a, b) => Number(a) - Number(b));
+      const pieData = pieLabels.map(l => storyPointCounts[l]);
+      if (pieChart) pieChart.destroy();
+      pieChart = new Chart(document.getElementById("pieChart").getContext("2d"), {
+        type: "pie",
+        data: {
+          labels: pieLabels.map(l => `${l} SP`),
+          datasets: [{
+            data: pieData,
+            backgroundColor: [
+              "#3c78d8", "#6fa8dc", "#b4a7d6", "#ffd966", "#93c47d", "#f6b26b", "#e06666", "#76a5af"
+            ]
+          }]
+        },
+        options: {
+          plugins: {
+            legend: { display: true, position: "bottom" },
+            tooltip: {
+              callbacks: {
+                label: (ctx) => `${ctx.label}: ${ctx.parsed} Issues`
+              }
+            }
+          }
+        }
+      });
+
+      // Scatterplot
+      const scatterData = filteredIssues.map(issue => ({
+        x: issue.storyPoints,
+        y: issue.totalEffort,
+        issue: issue.issue
+      }));
+      if (scatterChart) scatterChart.destroy();
+      scatterChart = new Chart(document.getElementById("scatterChart").getContext("2d"), {
+        type: "scatter",
+        data: {
+          datasets: [{
+            label: "Issues",
+            data: scatterData,
+            pointRadius: 6,
+            pointHoverRadius: 9,
+            backgroundColor: "rgba(60,120,216,0.7)",
+            borderColor: "#3463ad",
+          }]
+        },
+        options: {
+          plugins: {
+            tooltip: {
+              callbacks: {
+                label: (ctx) =>
+                  `Issue: ${ctx.raw.issue}\nStory Points: ${ctx.raw.x}\nEffort: ${ctx.raw.y} h`
+              }
+            },
+            legend: { display: false }
+          },
+          scales: {
+            x: {
+              type: "linear",
+              title: { display: true, text: "Story Points" },
+              beginAtZero: true
+            },
+            y: {
+              title: { display: true, text: "Total Effort (h)" },
+              beginAtZero: true
+            }
+          }
+        }
+      });
+
+      // Average Table
+      let avgEffortHtml = `<div style="margin-top:12px;"><b>Average Total Effort per Estimate</b></div>
+      <table class="average-table" style="margin-top:8px;">
+        <thead>
+          <tr>
+            <th>Story Points</th>
+            <th>Number of Issues</th>
+            <th>Average Total Effort (h)</th>
+          </tr>
+        </thead>
+        <tbody>`;
+      pieLabels.forEach(sp => {
+        const issues = filteredIssues.filter(i => i.storyPoints == sp);
+        const avg = issues.length ? (issues.reduce((s, i) => s + i.totalEffort, 0) / issues.length).toFixed(2) : "–";
+        avgEffortHtml += `
+          <tr>
+            <td>${sp}</td>
+            <td>${issues.length}</td>
+            <td>${avg}</td>
+          </tr>
+        `;
+      });
+      avgEffortHtml += `</tbody></table>`;
+      document.getElementById("avgEffortDiv").innerHTML = avgEffortHtml;
+
+      // Ausklappbare Gruppen mit Search-Filter
+      let groupsHtml = "";
+      Object.keys(groups).sort((a,b)=>a-b).forEach(sp => {
+        let list = groups[sp];
+        // Apply search filter to list
+        if (searchValue) {
+          const s = searchValue.toLowerCase();
+          list = list.filter(issue =>
+            (issue.issue && issue.issue.toLowerCase().includes(s)) ||
+            (issue.task && issue.task.toLowerCase().includes(s))
+          );
+        }
+        if (!list.length) return;
+        groupsHtml += `<details>
+          <summary>${sp} Story Point${sp==1?'':'s'} <span style="font-weight:normal;color:#567">(${list.length} Issues)</span></summary>
+          <div class="group-list">
+            <table>
+              <thead>
+                <tr>
+                  <th>Issue Key</th>
+                  <th>Total Effort (h)</th>
+                  <th>Effort per Story Point</th>
+                  <th>Task</th>
+                  <th>Epic</th>
+                  <th>Team</th>
+                  <th>Date</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${list.map(issue => `
+                  <tr>
+                    <td>${issue.issue}</td>
+                    <td>${issue.totalEffort.toFixed(2)}</td>
+                    <td>${issue.effortPerSP !== null ? issue.effortPerSP.toFixed(2) : "–"}</td>
+                    <td>${issue.task || "–"}</td>
+                    <td>${issue.epic || "–"}</td>
+                    <td>${issue.team || "–"}</td>
+                    <td>${issue.date || "–"}</td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>
+          </div>
+        </details>`;
+      });
+      document.getElementById("groups").innerHTML = groupsHtml;
+    }
+
+    function updateVisualization(headerMap, epicSel, teamSel, fromDate, toDate, searchValue = "") {
+      // Filtere Issues
+      let filteredIssues = allIssuesArr.filter(issue => {
+        // Filter by Epic
+        if (epicSel.length && !epicSel.includes(issue.epic)) return false;
+        // Filter by Team
+        if (teamSel.length && !teamSel.includes(issue.team)) return false;
+        // Filter by Date
+        const d = parseDate(issue.date);
+        if (fromDate && (!d || d < fromDate)) return false;
+        if (toDate && (!d || d > toDate)) return false;
+        return true;
+      });
+      // Gruppen neu aufbauen
+      const groups = {};
+      filteredIssues.forEach(issue => {
+        if (!groups[issue.storyPoints]) groups[issue.storyPoints] = [];
+        groups[issue.storyPoints].push(issue);
+      });
+      renderFiltered(filteredIssues, groups, headerMap, searchValue);
+    }
+
+    // CSV Upload & Initial-Parse
     document.getElementById("csvfile").addEventListener("change", function(e) {
       const file = e.target.files[0];
       if (!file) return;
@@ -97,6 +321,8 @@
         if (!csvRows.length) {
           document.getElementById("groups").innerHTML = '';
           document.getElementById("headerDebug").innerHTML = '<div class="notfound">No data rows found.</div>';
+          document.getElementById("filterPanel").style.display = "none";
+          document.getElementById("searchBlock").style.display = "none";
           return;
         }
 
@@ -104,6 +330,9 @@
         const aufgabeKey = Object.keys(headerMap).find(k => k.startsWith("aufgabe"));
         const stdKey = Object.keys(headerMap).find(k => k.startsWith("std"));
         const spKey = Object.keys(headerMap).find(k => k.startsWith("storypoints"));
+        const epicKey = Object.keys(headerMap).find(k => k.startsWith("epicreferenz"));
+        const teamKey = Object.keys(headerMap).find(k => k.startsWith("team"));
+        const dateKey = Object.keys(headerMap).find(k => k.startsWith("tag"));
 
         document.getElementById("headerDebug").innerHTML = '<div class="headers">Detected columns: ' +
           Object.keys(headerMap).map(h => `<code>${headerMap[h]}</code>`).join(', ') + '</div>';
@@ -112,216 +341,90 @@
           document.getElementById("groups").innerHTML =
             `<div class="notfound">Could not find all required columns ("Aufgabe", "Std.", "StoryPoints")!<br>
             <br>Found columns: <code>${Object.keys(headerMap).map(h => headerMap[h]).join(", ")}</code></div>`;
+          document.getElementById("filterPanel").style.display = "none";
+          document.getElementById("searchBlock").style.display = "none";
           return;
         }
 
-        // --- 1. Datenstruktur: ---
-        const issuesArr = [];
-        const groups = {};
+        // Alle Issues verarbeiten
+        allRows = csvRows;
+        allIssuesArr = [];
+        allGroups = {};
         csvRows.forEach(row => {
           const key = extractIssueKey(row[headerMap[aufgabeKey]]);
           if (!key) return;
           let val = (row[headerMap[stdKey]] || "0").replace(",", ".");
           let eff = parseFloat(val || "0");
           let sp = parseFloat(row[headerMap[spKey]]);
+          // Nur Issues mit SP > 0 (keine Epics)
           if (!isNaN(sp) && sp > 0) {
-            let found = issuesArr.find(obj => obj.issue === key);
+            let found = allIssuesArr.find(obj => obj.issue === key);
             if (!found) {
               found = {
                 issue: key,
                 totalEffort: 0,
                 storyPoints: sp,
                 effortPerSP: 0,
-                rows: []
+                rows: [],
+                epic: epicKey ? row[headerMap[epicKey]] : "",
+                team: teamKey ? row[headerMap[teamKey]] : "",
+                date: dateKey ? row[headerMap[dateKey]] : "",
+                task: row[headerMap[aufgabeKey]]
               };
-              issuesArr.push(found);
+              allIssuesArr.push(found);
             }
             found.totalEffort += isNaN(eff) ? 0 : eff;
             found.rows.push(row);
           }
         });
-        // effortPerSP und Gruppen berechnen
-        issuesArr.forEach(issue => {
+        allIssuesArr.forEach(issue => {
           issue.effortPerSP = (issue.storyPoints && issue.storyPoints > 0) ?
               (issue.totalEffort / issue.storyPoints) : null;
-          // Gruppieren
+          // Gruppen für Start-View bauen
           const sp = issue.storyPoints;
-          if (!groups[sp]) groups[sp] = [];
-          groups[sp].push(issue);
+          if (!allGroups[sp]) allGroups[sp] = [];
+          allGroups[sp].push(issue);
         });
 
-        // --- 2. Pie Chart: Verteilung der Story Points ---
-        const storyPointCounts = {};
-        issuesArr.forEach(issue => {
-          const sp = issue.storyPoints;
-          if (!storyPointCounts[sp]) storyPointCounts[sp] = 0;
-          storyPointCounts[sp]++;
-        });
-        const pieLabels = Object.keys(storyPointCounts).sort((a, b) => Number(a) - Number(b));
-        const pieData = pieLabels.map(l => storyPointCounts[l]);
-        if (pieChart) pieChart.destroy();
-        pieChart = new Chart(document.getElementById("pieChart").getContext("2d"), {
-          type: "pie",
-          data: {
-            labels: pieLabels.map(l => `${l} SP`),
-            datasets: [{
-              data: pieData,
-              backgroundColor: [
-                "#3c78d8", "#6fa8dc", "#b4a7d6", "#ffd966", "#93c47d", "#f6b26b", "#e06666", "#76a5af"
-              ]
-            }]
-          },
-          options: {
-            plugins: {
-              legend: { display: true, position: "bottom" },
-              tooltip: {
-                callbacks: {
-                  label: (ctx) => `${ctx.label}: ${ctx.parsed} Issues`
-                }
-              }
-            }
-          }
-        });
+        // Fülle Filteroptionen (einzigartige Werte, sortiert, leere raus)
+        const epicVals = Array.from(new Set(allIssuesArr.map(i => i.epic).filter(Boolean))).sort();
+        const teamVals = Array.from(new Set(allIssuesArr.map(i => i.team).filter(Boolean))).sort();
+        fillSelectOptions(document.getElementById("epicFilter"), epicVals);
+        fillSelectOptions(document.getElementById("teamFilter"), teamVals);
 
-        // --- 3. Scatterplot: Story Points (x) vs. Effort (y) ---
-        const scatterData = issuesArr.map(issue => ({
-          x: issue.storyPoints,
-          y: issue.totalEffort,
-          issue: issue.issue
-        }));
-        if (scatterChart) scatterChart.destroy();
-        scatterChart = new Chart(document.getElementById("scatterChart").getContext("2d"), {
-          type: "scatter",
-          data: {
-            datasets: [{
-              label: "Issues",
-              data: scatterData,
-              pointRadius: 6,
-              pointHoverRadius: 9,
-              backgroundColor: "rgba(60,120,216,0.7)",
-              borderColor: "#3463ad",
-            }]
-          },
-          options: {
-            plugins: {
-              tooltip: {
-                callbacks: {
-                  label: (ctx) =>
-                    `Issue: ${ctx.raw.issue}\nStory Points: ${ctx.raw.x}\nEffort: ${ctx.raw.y} h`
-                }
-              },
-              legend: { display: false }
-            },
-            scales: {
-              x: {
-                type: "linear",
-                title: { display: true, text: "Story Points" },
-                beginAtZero: true
-              },
-              y: {
-                title: { display: true, text: "Total Effort (h)" },
-                beginAtZero: true
-              }
-            }
-          }
-        });
+        document.getElementById("filterPanel").style.display = "block";
+        document.getElementById("searchBlock").style.display = "block";
+        document.getElementById("epicFilter").selectedIndex = -1;
+        document.getElementById("teamFilter").selectedIndex = -1;
+        document.getElementById("fromDate").value = "";
+        document.getElementById("toDate").value = "";
+        document.getElementById("searchInput").value = "";
 
-        // --- 4. Histogramm: Effort per Story Point ---
-        const effortPerSPs = issuesArr
-          .map(i => i.effortPerSP)
-          .filter(v => v !== null && !isNaN(v));
-        const bins = 8;
-        const minV = Math.min(...effortPerSPs);
-        const maxV = Math.max(...effortPerSPs);
-        const step = (maxV - minV) / bins;
-        const histBins = new Array(bins).fill(0);
-        effortPerSPs.forEach(v => {
-          let idx = Math.floor((v - minV) / step);
-          if (idx >= bins) idx = bins - 1;
-          histBins[idx]++;
-        });
-        const histLabels = [];
-        for (let i = 0; i < bins; i++) {
-          const from = (minV + i * step).toFixed(2);
-          const to = (minV + (i + 1) * step).toFixed(2);
-          histLabels.push(`${from}–${to}`);
-        }
-        if (histogramChart) histogramChart.destroy();
-        histogramChart = new Chart(document.getElementById("histogramChart").getContext("2d"), {
-          type: "bar",
-          data: {
-            labels: histLabels,
-            datasets: [{
-              label: "Issues",
-              data: histBins,
-              backgroundColor: "rgba(60,120,216,0.45)"
-            }]
-          },
-          options: {
-            plugins: {
-              legend: { display: false }
-            },
-            scales: {
-              x: { title: { display: true, text: "Effort per Story Point (h/SP)" }},
-              y: { title: { display: true, text: "Number of Issues" }, beginAtZero: true }
-            }
-          }
-        });
+        // Initiale Darstellung (ohne Filter)
+        updateVisualization(headerMap, [], [], null, null);
 
-        // --- 5. Average Table: Durchschnitt pro Estimate ---
-        let avgEffortHtml = `<div style="margin-top:12px;"><b>Average Total Effort per Estimate</b></div>
-        <table class="average-table" style="margin-top:8px;">
-          <thead>
-            <tr>
-              <th>Story Points</th>
-              <th>Number of Issues</th>
-              <th>Average Total Effort (h)</th>
-            </tr>
-          </thead>
-          <tbody>`;
-        pieLabels.forEach(sp => {
-          const issues = groups[sp] || [];
-          const avg = issues.length ? (issues.reduce((s, i) => s + i.totalEffort, 0) / issues.length).toFixed(2) : "–";
-          avgEffortHtml += `
-            <tr>
-              <td>${sp}</td>
-              <td>${issues.length}</td>
-              <td>${avg}</td>
-            </tr>
-          `;
-        });
-        avgEffortHtml += `</tbody></table>`;
-        document.getElementById("avgEffortDiv").innerHTML = avgEffortHtml;
+        // Filter-Events
+        document.getElementById("epicFilter").onchange =
+        document.getElementById("teamFilter").onchange =
+        document.getElementById("fromDate").onchange =
+        document.getElementById("toDate").onchange =
+        document.getElementById("searchInput").oninput = function() {
+          const epicSel = Array.from(document.getElementById("epicFilter").selectedOptions).map(o => o.value);
+          const teamSel = Array.from(document.getElementById("teamFilter").selectedOptions).map(o => o.value);
+          const fromDate = document.getElementById("fromDate").value ? new Date(document.getElementById("fromDate").value) : null;
+          const toDate = document.getElementById("toDate").value ? new Date(document.getElementById("toDate").value) : null;
+          const searchValue = document.getElementById("searchInput").value || "";
+          updateVisualization(headerMap, epicSel, teamSel, fromDate, toDate, searchValue);
+        };
 
-        // --- 6. Gruppierung: Ausklappbar nach Story Points ---
-        let groupsHtml = "";
-        Object.keys(groups).sort((a,b)=>a-b).forEach(sp => {
-          const list = groups[sp];
-          groupsHtml += `<details>
-            <summary>${sp} Story Point${sp==1?'':'s'} <span style="font-weight:normal;color:#567">(${list.length} Issues)</span></summary>
-            <div class="group-list">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Issue Key</th>
-                    <th>Total Effort (h)</th>
-                    <th>Effort per Story Point</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  ${list.map(issue => `
-                    <tr>
-                      <td>${issue.issue}</td>
-                      <td>${issue.totalEffort.toFixed(2)}</td>
-                      <td>${issue.effortPerSP !== null ? issue.effortPerSP.toFixed(2) : "–"}</td>
-                    </tr>
-                  `).join('')}
-                </tbody>
-              </table>
-            </div>
-          </details>`;
-        });
-        document.getElementById("groups").innerHTML = groupsHtml;
+        document.getElementById("clearFilters").onclick = function() {
+          document.getElementById("epicFilter").selectedIndex = -1;
+          document.getElementById("teamFilter").selectedIndex = -1;
+          document.getElementById("fromDate").value = "";
+          document.getElementById("toDate").value = "";
+          document.getElementById("searchInput").value = "";
+          updateVisualization(headerMap, [], [], null, null, "");
+        };
       };
       reader.readAsText(file, "utf-8");
     });
