@@ -56,8 +56,7 @@
         <button id="clearFilters" type="button" style="margin-left:14px;">Clear Filters</button>
       </form>
     </div>
-    <div class="chart-block">
-     <div class="chart-block" style="max-width:340px;">
+    <div class="chart-block" style="max-width:340px;">
       <canvas id="pieChart" height="70"></canvas>
     </div>
     <div class="chart-block">
@@ -120,7 +119,6 @@
     }
     function parseDate(str) {
       if (!str) return null;
-      // Try ISO, or dd.mm.yyyy, or dd/mm/yyyy, or yyyy-mm-dd
       let d = new Date(str);
       if (!isNaN(d)) return d;
       if (/^\d{2}\.\d{2}\.\d{4}/.test(str)) {
@@ -134,7 +132,6 @@
       return null;
     }
 
-    // Hauptfunktion zur Darstellung & Filterung
     function renderFiltered(filteredIssues, groups, headerMap, searchValue = "") {
       // Pie Chart
       const storyPointCounts = {};
@@ -286,19 +283,14 @@
     }
 
     function updateVisualization(headerMap, epicSel, teamSel, fromDate, toDate, searchValue = "") {
-      // Filtere Issues
       let filteredIssues = allIssuesArr.filter(issue => {
-        // Filter by Epic
         if (epicSel.length && !epicSel.includes(issue.epic)) return false;
-        // Filter by Team
         if (teamSel.length && !teamSel.includes(issue.team)) return false;
-        // Filter by Date
         const d = parseDate(issue.date);
         if (fromDate && (!d || d < fromDate)) return false;
         if (toDate && (!d || d > toDate)) return false;
         return true;
       });
-      // Gruppen neu aufbauen
       const groups = {};
       filteredIssues.forEach(issue => {
         if (!groups[issue.storyPoints]) groups[issue.storyPoints] = [];
@@ -314,7 +306,7 @@
       const reader = new FileReader();
       reader.onload = function(evt) {
         let text = evt.target.result;
-        text = text.replace(/,(\d)/g, '.$1'); // Convert decimal commas
+        text = text.replace(/,(\d)/g, '.$1');
 
         const delimiter = detectDelimiter(text);
         const csvRows = parseCSV(text, delimiter);
@@ -331,7 +323,10 @@
         const aufgabeKey = Object.keys(headerMap).find(k => k.startsWith("aufgabe"));
         const stdKey = Object.keys(headerMap).find(k => k.startsWith("std"));
         const spKey = Object.keys(headerMap).find(k => k.startsWith("storypoints"));
-        const epicKey = Object.keys(headerMap).find(k => k.startsWith("epicreferenz"));
+        // Robust: Epic-Referenz unabhängig von Bindestrichen, Leerzeichen, Groß/Kleinschreibung
+        const epicKey = Object.keys(headerMap).find(
+          k => k.replace(/[^a-z]/gi,'').includes('epicreferenz')
+        );
         const teamKey = Object.keys(headerMap).find(k => k.startsWith("team"));
         const dateKey = Object.keys(headerMap).find(k => k.startsWith("tag"));
 
@@ -347,7 +342,6 @@
           return;
         }
 
-        // Alle Issues verarbeiten
         allRows = csvRows;
         allIssuesArr = [];
         allGroups = {};
@@ -357,7 +351,6 @@
           let val = (row[headerMap[stdKey]] || "0").replace(",", ".");
           let eff = parseFloat(val || "0");
           let sp = parseFloat(row[headerMap[spKey]]);
-          // Nur Issues mit SP > 0 (keine Epics)
           if (!isNaN(sp) && sp > 0) {
             let found = allIssuesArr.find(obj => obj.issue === key);
             if (!found) {
@@ -381,13 +374,12 @@
         allIssuesArr.forEach(issue => {
           issue.effortPerSP = (issue.storyPoints && issue.storyPoints > 0) ?
               (issue.totalEffort / issue.storyPoints) : null;
-          // Gruppen für Start-View bauen
           const sp = issue.storyPoints;
           if (!allGroups[sp]) allGroups[sp] = [];
           allGroups[sp].push(issue);
         });
 
-        // Fülle Filteroptionen (einzigartige Werte, sortiert, leere raus)
+        // Fill filter dropdowns
         const epicVals = Array.from(new Set(allIssuesArr.map(i => i.epic).filter(Boolean))).sort();
         const teamVals = Array.from(new Set(allIssuesArr.map(i => i.team).filter(Boolean))).sort();
         fillSelectOptions(document.getElementById("epicFilter"), epicVals);
@@ -401,7 +393,6 @@
         document.getElementById("toDate").value = "";
         document.getElementById("searchInput").value = "";
 
-        // Initiale Darstellung (ohne Filter)
         updateVisualization(headerMap, [], [], null, null);
 
         // Filter-Events
