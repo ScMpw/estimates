@@ -5,6 +5,9 @@
   <title>Effort per Issue Analysis</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <!-- Choices.js für modernen Multi-Select -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/choices.js/public/assets/styles/choices.min.css" />
+  <script src="https://cdn.jsdelivr.net/npm/choices.js/public/assets/scripts/choices.min.js"></script>
   <style>
     body { font-family: sans-serif; background: #f7f8fa; margin: 0; }
     .container { max-width: 1000px; margin: 40px auto; background: #fff; border-radius: 14px; box-shadow: 0 2px 16px #0001; padding: 32px 24px; }
@@ -24,6 +27,8 @@
     .headers { color: #555; font-size: 13px; margin: 16px 0 0 0; }
     .search-block { margin: 18px 0 0 0; }
     .search-block input { width: 230px; padding: 6px 8px; font-size: 1em;}
+    /* Choices.js fix: min width for dropdown */
+    .choices__list--dropdown { min-width: 240px; }
   </style>
 </head>
 <body>
@@ -39,7 +44,7 @@
       <form id="filterForm" onsubmit="return false;">
         <label>
           <b>Epics:</b>
-          <select id="epicFilter" multiple size="1"></select>
+          <select id="epicFilter" multiple></select>
         </label>
         <label>
           <b>Date from:</b>
@@ -69,6 +74,7 @@
     <div class="footer">(No data is sent to any server. All processing happens in your browser.)</div>
   </div>
   <script>
+    // CSV/Parsing/Helpers wie gehabt
     function detectDelimiter(text) {
       const firstLine = text.split(/\r?\n/)[0];
       const comma = (firstLine.match(/,/g) || []).length;
@@ -104,16 +110,16 @@
       if (!arr.length) return "–";
       const s = [...arr].sort((a,b)=>a-b);
       const mid = Math.floor(s.length/2);
-      return s.length % 2 ? s[mid] : ((s[mid-1]+s[mid])/2).toFixed(2);
+      if (s.length % 2) return s[mid].toFixed(2);
+      return ((s[mid-1]+s[mid])/2).toFixed(2);
     }
     function minMax(arr) {
       if (!arr.length) return ["–", "–"];
       return [Math.min(...arr).toFixed(2), Math.max(...arr).toFixed(2)];
     }
 
-    // Global Data
     let allIssuesArr = [];
-    let allGroups = {};
+    let allGroups = [];
     let allRows = [];
     let scatterChart = null;
     let pieChart = null;
@@ -393,9 +399,22 @@
           allGroups[sp].push(issue);
         });
 
-        // Nur Epics-Filter Dropdown (kein Team-Filter)
+        // Epics-Filter Dropdown befüllen (mit Choices.js für Suche/Mehrfachauswahl)
         const epicVals = Array.from(new Set(allIssuesArr.map(i => i.epic).filter(Boolean))).sort();
-        fillSelectOptions(document.getElementById("epicFilter"), epicVals);
+        const epicSelElem = document.getElementById("epicFilter");
+        fillSelectOptions(epicSelElem, epicVals);
+
+        // Choices.js neu initialisieren
+        if (window.epicChoices) window.epicChoices.destroy();
+        window.epicChoices = new Choices(epicSelElem, {
+          removeItemButton: true,
+          searchResultLimit: 15,
+          shouldSort: true,
+          placeholderValue: 'Select epic(s)...',
+          searchPlaceholderValue: 'Search Epics...',
+          noResultsText: 'No results found',
+          noChoicesText: 'No epics available'
+        });
 
         document.getElementById("filterPanel").style.display = "block";
         document.getElementById("searchBlock").style.display = "block";
@@ -406,20 +425,23 @@
 
         updateVisualization(headerMap, [], null, null);
 
-        // Filter-Events (ohne Team)
-        document.getElementById("epicFilter").onchange =
-        document.getElementById("fromDate").onchange =
-        document.getElementById("toDate").onchange =
-        document.getElementById("searchInput").oninput = function() {
-          const epicSel = Array.from(document.getElementById("epicFilter").selectedOptions).map(o => o.value);
+        // Filter-Events (Choices.js holt Werte über .getValue(true))
+        const filterHandler = function() {
+          // Choices.js: getValue(true) für Array mit den gewählten Werten
+          const epicSel = window.epicChoices ? window.epicChoices.getValue(true) : [];
           const fromDate = document.getElementById("fromDate").value ? new Date(document.getElementById("fromDate").value) : null;
           const toDate = document.getElementById("toDate").value ? new Date(document.getElementById("toDate").value) : null;
           const searchValue = document.getElementById("searchInput").value || "";
           updateVisualization(headerMap, epicSel, fromDate, toDate, searchValue);
         };
 
+        epicSelElem.addEventListener('change', filterHandler);
+        document.getElementById("fromDate").onchange =
+        document.getElementById("toDate").onchange =
+        document.getElementById("searchInput").oninput = filterHandler;
+
         document.getElementById("clearFilters").onclick = function() {
-          document.getElementById("epicFilter").selectedIndex = -1;
+          if (window.epicChoices) window.epicChoices.removeActiveItems();
           document.getElementById("fromDate").value = "";
           document.getElementById("toDate").value = "";
           document.getElementById("searchInput").value = "";
