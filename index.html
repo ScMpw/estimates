@@ -42,10 +42,6 @@
           <select id="epicFilter" multiple size="1"></select>
         </label>
         <label>
-          <b>Team:</b>
-          <select id="teamFilter" multiple size="1"></select>
-        </label>
-        <label>
           <b>Date from:</b>
           <input type="date" id="fromDate">
         </label>
@@ -73,7 +69,6 @@
     <div class="footer">(No data is sent to any server. All processing happens in your browser.)</div>
   </div>
   <script>
-    // Helper: Delimiter detection, CSV, Header normalizing, Issue key extraction
     function detectDelimiter(text) {
       const firstLine = text.split(/\r?\n/)[0];
       const comma = (firstLine.match(/,/g) || []).length;
@@ -104,15 +99,25 @@
       const match = aufgabe.match(/^([A-Z]+-\d+)/i);
       return match ? match[1] : null;
     }
+    // Median & Range Helpers
+    function median(arr) {
+      if (!arr.length) return "–";
+      const s = [...arr].sort((a,b)=>a-b);
+      const mid = Math.floor(s.length/2);
+      return s.length % 2 ? s[mid] : ((s[mid-1]+s[mid])/2).toFixed(2);
+    }
+    function minMax(arr) {
+      if (!arr.length) return ["–", "–"];
+      return [Math.min(...arr).toFixed(2), Math.max(...arr).toFixed(2)];
+    }
+
     // Global Data
     let allIssuesArr = [];
     let allGroups = {};
     let allRows = [];
-    let filterFields = {};
     let scatterChart = null;
     let pieChart = null;
 
-    // UI Helper für Filter
     function fillSelectOptions(sel, list) {
       sel.innerHTML = list.map(v => `<option value="${v}">${v}</option>`).join('');
       sel.size = Math.min(list.length, 8);
@@ -209,36 +214,41 @@
         }
       });
 
-        // Average Table
-       // Summary Numbers
+      // Summary Numbers
       const totalStories = filteredIssues.length;
       const totalEffort = filteredIssues.reduce((sum, i) => sum + i.totalEffort, 0).toFixed(2);
-      
+
       let avgEffortHtml = `
       <div style="margin:12px 0 12px 0;">
         <b>Summary</b><br>
         <span>Total Number of Stories: <b>${totalStories}</b></span><br>
         <span>Total Effort (h): <b>${totalEffort}</b></span>
       </div>
-      <div style="margin-top:12px;"><b>Average Total Effort per Estimate</b></div>
+      <div style="margin-top:12px;"><b>Effort per Estimate – Median / Min / Max</b></div>
       <table class="average-table" style="margin-top:8px;">
         <thead>
           <tr>
             <th>Story Points</th>
             <th>Number of Issues</th>
-            <th>Average Total Effort (h)</th>
+            <th>Median Total Effort (h)</th>
+            <th>Min (h)</th>
+            <th>Max (h)</th>
           </tr>
         </thead>
         <tbody>`;
 
       pieLabels.forEach(sp => {
         const issues = filteredIssues.filter(i => i.storyPoints == sp);
-        const avg = issues.length ? (issues.reduce((s, i) => s + i.totalEffort, 0) / issues.length).toFixed(2) : "–";
+        const efforts = issues.map(i => i.totalEffort);
+        const med = median(efforts);
+        const [minEff, maxEff] = minMax(efforts);
         avgEffortHtml += `
           <tr>
             <td>${sp}</td>
             <td>${issues.length}</td>
-            <td>${avg}</td>
+            <td>${med}</td>
+            <td>${minEff}</td>
+            <td>${maxEff}</td>
           </tr>
         `;
       });
@@ -249,7 +259,6 @@
       let groupsHtml = "";
       Object.keys(groups).sort((a,b)=>a-b).forEach(sp => {
         let list = groups[sp];
-        // Apply search filter to list
         if (searchValue) {
           const s = searchValue.toLowerCase();
           list = list.filter(issue =>
@@ -269,7 +278,6 @@
                   <th>Effort per Story Point</th>
                   <th>Task</th>
                   <th>Epic</th>
-                  <th>Team</th>
                   <th>Date</th>
                 </tr>
               </thead>
@@ -281,7 +289,6 @@
                     <td>${issue.effortPerSP !== null ? issue.effortPerSP.toFixed(2) : "–"}</td>
                     <td>${issue.task || "–"}</td>
                     <td>${issue.epic || "–"}</td>
-                    <td>${issue.team || "–"}</td>
                     <td>${issue.date || "–"}</td>
                   </tr>
                 `).join('')}
@@ -293,10 +300,9 @@
       document.getElementById("groups").innerHTML = groupsHtml;
     }
 
-    function updateVisualization(headerMap, epicSel, teamSel, fromDate, toDate, searchValue = "") {
+    function updateVisualization(headerMap, epicSel, fromDate, toDate, searchValue = "") {
       let filteredIssues = allIssuesArr.filter(issue => {
         if (epicSel.length && !epicSel.includes(issue.epic)) return false;
-        if (teamSel.length && !teamSel.includes(issue.team)) return false;
         const d = parseDate(issue.date);
         if (fromDate && (!d || d < fromDate)) return false;
         if (toDate && (!d || d > toDate)) return false;
@@ -337,8 +343,6 @@
         const epicKey = Object.keys(headerMap).find(
           k => k.replace(/[^a-z]/gi,'').includes('epicreferenz')
         );
-        // ***** Nur die echte Team-Spalte ("Team") *****
-        const teamKey = Object.keys(headerMap).find(k => headerMap[k].trim().toLowerCase() === 'team');
         const dateKey = Object.keys(headerMap).find(k => k.startsWith("tag"));
 
         document.getElementById("headerDebug").innerHTML = '<div class="headers">Detected columns: ' +
@@ -372,7 +376,6 @@
                 effortPerSP: 0,
                 rows: [],
                 epic: epicKey ? row[headerMap[epicKey]] : "",
-                team: teamKey ? row[headerMap[teamKey]] : "", // Nur die echte Team-Spalte!
                 date: dateKey ? row[headerMap[dateKey]] : "",
                 task: row[headerMap[aufgabeKey]]
               };
@@ -390,44 +393,37 @@
           allGroups[sp].push(issue);
         });
 
-        // Team-Filter: Nur Werte aus der echten Team-Spalte!
-        const teamVals = Array.from(new Set(allIssuesArr.map(i => i.team).filter(Boolean))).sort();
-        // Epic-Filter bleibt wie gehabt
+        // Nur Epics-Filter Dropdown (kein Team-Filter)
         const epicVals = Array.from(new Set(allIssuesArr.map(i => i.epic).filter(Boolean))).sort();
         fillSelectOptions(document.getElementById("epicFilter"), epicVals);
-        fillSelectOptions(document.getElementById("teamFilter"), teamVals);
 
         document.getElementById("filterPanel").style.display = "block";
         document.getElementById("searchBlock").style.display = "block";
         document.getElementById("epicFilter").selectedIndex = -1;
-        document.getElementById("teamFilter").selectedIndex = -1;
         document.getElementById("fromDate").value = "";
         document.getElementById("toDate").value = "";
         document.getElementById("searchInput").value = "";
 
-        updateVisualization(headerMap, [], [], null, null);
+        updateVisualization(headerMap, [], null, null);
 
-        // Filter-Events
+        // Filter-Events (ohne Team)
         document.getElementById("epicFilter").onchange =
-        document.getElementById("teamFilter").onchange =
         document.getElementById("fromDate").onchange =
         document.getElementById("toDate").onchange =
         document.getElementById("searchInput").oninput = function() {
           const epicSel = Array.from(document.getElementById("epicFilter").selectedOptions).map(o => o.value);
-          const teamSel = Array.from(document.getElementById("teamFilter").selectedOptions).map(o => o.value);
           const fromDate = document.getElementById("fromDate").value ? new Date(document.getElementById("fromDate").value) : null;
           const toDate = document.getElementById("toDate").value ? new Date(document.getElementById("toDate").value) : null;
           const searchValue = document.getElementById("searchInput").value || "";
-          updateVisualization(headerMap, epicSel, teamSel, fromDate, toDate, searchValue);
+          updateVisualization(headerMap, epicSel, fromDate, toDate, searchValue);
         };
 
         document.getElementById("clearFilters").onclick = function() {
           document.getElementById("epicFilter").selectedIndex = -1;
-          document.getElementById("teamFilter").selectedIndex = -1;
           document.getElementById("fromDate").value = "";
           document.getElementById("toDate").value = "";
           document.getElementById("searchInput").value = "";
-          updateVisualization(headerMap, [], [], null, null, "");
+          updateVisualization(headerMap, [], null, null, "");
         };
       };
       reader.readAsText(file, "utf-8");
