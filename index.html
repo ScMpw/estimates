@@ -5,17 +5,22 @@
   <title>Effort per Issue Analysis</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-  <!-- Choices.js für modernen Multi-Select -->
+  <!-- Choices.js -->
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/choices.js/public/assets/styles/choices.min.css" />
   <script src="https://cdn.jsdelivr.net/npm/choices.js/public/assets/scripts/choices.min.js"></script>
   <style>
     body { font-family: sans-serif; background: #f7f8fa; margin: 0; }
     .container { max-width: 1000px; margin: 40px auto; background: #fff; border-radius: 14px; box-shadow: 0 2px 16px #0001; padding: 32px 24px; }
     h2 { margin-top: 0; }
-    input[type=file], select, input[type="date"] { margin: 8px 0 16px 0; }
+    input[type=file], select, input[type="date"], input[type="text"] { margin: 8px 0 16px 0; }
     .chart-block { margin: 32px 0; }
-    .filter-block { margin: 18px 0 30px 0; background: #f6f6fa; padding: 15px 16px 2px 16px; border-radius: 10px; }
-    .filter-block label { margin-right: 14px; }
+    .filter-block { margin: 18px 0 30px 0; background: #f6f6fa; padding: 15px 16px 8px 16px; border-radius: 10px; }
+    .filter-row { display: flex; flex-wrap: wrap; gap: 14px; align-items: center; }
+    .filter-col { display: flex; flex-direction: column; }
+    .filter-col label { font-weight: 600; margin-bottom: 6px; }
+    .bulk-row { display: flex; gap: 8px; align-items: center; margin: 0 0 10px 0; }
+    .bulk-row input { width: 420px; max-width: 100%; padding: 6px 8px; }
+    .bulk-feedback { font-size: 12px; color: #555; margin-top: -8px; }
     details { margin: 0 0 18px 0; background: #f7f8fc; border-radius: 8px; border: 1px solid #eee; }
     summary { font-weight: bold; padding: 10px 14px; cursor: pointer; outline: none;}
     .group-list { padding: 0 18px 12px 34px; }
@@ -27,8 +32,9 @@
     .headers { color: #555; font-size: 13px; margin: 16px 0 0 0; }
     .search-block { margin: 18px 0 0 0; }
     .search-block input { width: 230px; padding: 6px 8px; font-size: 1em;}
-    /* Choices.js fix: min width for dropdown */
     .choices__list--dropdown { min-width: 240px; }
+    button { padding: 6px 10px; border-radius: 8px; border: 1px solid #ddd; background: #fff; cursor: pointer; }
+    button:hover { background: #f0f0f0; }
   </style>
 </head>
 <body>
@@ -41,22 +47,36 @@
     </div>
     <div id="headerDebug"></div>
     <div id="filterPanel" class="filter-block" style="display:none;">
+      <!-- Bulk paste row -->
+      <div class="bulk-row">
+        <label for="bulkEpicsInput" style="font-weight:600;">Paste Epics:</label>
+        <input type="text" id="bulkEpicsInput" placeholder="e.g. CIRMP-1703, BF-392, ABC-123" />
+        <button id="bulkApply">Apply</button>
+        <button id="bulkClear">Clear</button>
+      </div>
+      <div id="bulkFeedback" class="bulk-feedback"></div>
+
       <form id="filterForm" onsubmit="return false;">
-        <label>
-          <b>Epics:</b>
-          <select id="epicFilter" multiple></select>
-        </label>
-        <label>
-          <b>Date from:</b>
-          <input type="date" id="fromDate">
-        </label>
-        <label>
-          <b>to:</b>
-          <input type="date" id="toDate">
-        </label>
-        <button id="clearFilters" type="button" style="margin-left:14px;">Clear Filters</button>
+        <div class="filter-row">
+          <div class="filter-col" style="min-width:260px; flex:1;">
+            <label for="epicFilter">Epics</label>
+            <select id="epicFilter" multiple></select>
+          </div>
+          <div class="filter-col">
+            <label for="fromDate">Date from</label>
+            <input type="date" id="fromDate">
+          </div>
+          <div class="filter-col">
+            <label for="toDate">to</label>
+            <input type="date" id="toDate">
+          </div>
+          <div class="filter-col" style="align-self:flex-end;">
+            <button id="clearFilters" type="button">Clear Filters</button>
+          </div>
+        </div>
       </form>
     </div>
+
     <div class="chart-block" style="max-width:340px;">
       <canvas id="pieChart" height="70"></canvas>
     </div>
@@ -64,17 +84,20 @@
       <canvas id="scatterChart" height="220"></canvas>
     </div>
     <div class="chart-block" id="avgEffortDiv"></div>
+
     <div class="search-block" id="searchBlock" style="display:none;">
       <label>
         <b>Search Issue/Task:</b>
         <input type="text" id="searchInput" placeholder="Find by Issue Key or Task...">
       </label>
     </div>
+
     <div id="groups"></div>
     <div class="footer">(No data is sent to any server. All processing happens in your browser.)</div>
   </div>
+
   <script>
-    // CSV/Parsing/Helpers wie gehabt
+    // --- Helpers ---
     function detectDelimiter(text) {
       const firstLine = text.split(/\r?\n/)[0];
       const comma = (firstLine.match(/,/g) || []).length;
@@ -105,7 +128,6 @@
       const match = aufgabe.match(/^([A-Z]+-\d+)/i);
       return match ? match[1] : null;
     }
-    // Median & Range Helpers
     function median(arr) {
       if (!arr.length) return "–";
       const s = [...arr].sort((a,b)=>a-b);
@@ -117,16 +139,8 @@
       if (!arr.length) return ["–", "–"];
       return [Math.min(...arr).toFixed(2), Math.max(...arr).toFixed(2)];
     }
-
-    let allIssuesArr = [];
-    let allGroups = [];
-    let allRows = [];
-    let scatterChart = null;
-    let pieChart = null;
-
     function fillSelectOptions(sel, list) {
       sel.innerHTML = list.map(v => `<option value="${v}">${v}</option>`).join('');
-      sel.size = Math.min(list.length, 8);
     }
     function parseDate(str) {
       if (!str) return null;
@@ -143,8 +157,15 @@
       return null;
     }
 
+    // --- State ---
+    let allIssuesArr = [];
+    let scatterChart = null;
+    let pieChart = null;
+    let epicChoices = null;
+
+    // --- Rendering ---
     function renderFiltered(filteredIssues, groups, headerMap, searchValue = "") {
-      // Pie Chart
+      // Pie
       const storyPointCounts = {};
       filteredIssues.forEach(issue => {
         const sp = issue.storyPoints;
@@ -158,71 +179,26 @@
         type: "pie",
         data: {
           labels: pieLabels.map(l => `${l} SP`),
-          datasets: [{
-            data: pieData,
-            backgroundColor: [
-              "#3c78d8", "#6fa8dc", "#b4a7d6", "#ffd966", "#93c47d", "#f6b26b", "#e06666", "#76a5af"
-            ]
-          }]
+          datasets: [{ data: pieData, backgroundColor: ["#3c78d8","#6fa8dc","#b4a7d6","#ffd966","#93c47d","#f6b26b","#e06666","#76a5af"] }]
         },
-        options: {
-          plugins: {
-            legend: { display: true, position: "bottom" },
-            tooltip: {
-              callbacks: {
-                label: (ctx) => `${ctx.label}: ${ctx.parsed} Issues`
-              }
-            }
-          }
-        }
+        options: { plugins: { legend: { display: true, position: "bottom" },
+          tooltip: { callbacks: { label: (ctx) => `${ctx.label}: ${ctx.parsed} Issues` } } } }
       });
 
-      // Scatterplot
-      const scatterData = filteredIssues.map(issue => ({
-        x: issue.storyPoints,
-        y: issue.totalEffort,
-        issue: issue.issue
-      }));
+      // Scatter
+      const scatterData = filteredIssues.map(issue => ({ x: issue.storyPoints, y: issue.totalEffort, issue: issue.issue }));
       if (scatterChart) scatterChart.destroy();
       scatterChart = new Chart(document.getElementById("scatterChart").getContext("2d"), {
         type: "scatter",
-        data: {
-          datasets: [{
-            label: "Issues",
-            data: scatterData,
-            pointRadius: 6,
-            pointHoverRadius: 9,
-            backgroundColor: "rgba(60,120,216,0.7)",
-            borderColor: "#3463ad",
-          }]
-        },
-        options: {
-          plugins: {
-            tooltip: {
-              callbacks: {
-                label: (ctx) =>
-                  `Issue: ${ctx.raw.issue}\nStory Points: ${ctx.raw.x}\nEffort: ${ctx.raw.y} h`
-              }
-            },
-            legend: { display: false }
-          },
-          scales: {
-            x: {
-              type: "linear",
-              title: { display: true, text: "Story Points" },
-              beginAtZero: true
-            },
-            y: {
-              title: { display: true, text: "Total Effort (h)" },
-              beginAtZero: true
-            }
-          }
-        }
+        data: { datasets: [{ label: "Issues", data: scatterData, pointRadius: 6, pointHoverRadius: 9, backgroundColor: "rgba(60,120,216,0.7)", borderColor: "#3463ad" }] },
+        options: { plugins: { tooltip: { callbacks: { label: (ctx) => `Issue: ${ctx.raw.issue}\nStory Points: ${ctx.raw.x}\nEffort: ${ctx.raw.y} h` } }, legend: { display: false } },
+          scales: { x: { type: "linear", title: { display: true, text: "Story Points" }, beginAtZero: true },
+                   y: { title: { display: true, text: "Total Effort (h)" }, beginAtZero: true } } }
       });
 
-      // Summary Numbers
+      // Summary + Median table
       const totalStories = filteredIssues.length;
-      const totalEffort = filteredIssues.reduce((sum, i) => sum + i.totalEffort, 0).toFixed(2);
+      const totalEffort = filteredIssues.reduce((s, i) => s + i.totalEffort, 0).toFixed(2);
 
       let avgEffortHtml = `
       <div style="margin:12px 0 12px 0;">
@@ -255,13 +231,12 @@
             <td>${med}</td>
             <td>${minEff}</td>
             <td>${maxEff}</td>
-          </tr>
-        `;
+          </tr>`;
       });
       avgEffortHtml += `</tbody></table>`;
       document.getElementById("avgEffortDiv").innerHTML = avgEffortHtml;
 
-      // Ausklappbare Gruppen mit Search-Filter
+      // Groups
       let groupsHtml = "";
       Object.keys(groups).sort((a,b)=>a-b).forEach(sp => {
         let list = groups[sp];
@@ -296,8 +271,7 @@
                     <td>${issue.task || "–"}</td>
                     <td>${issue.epic || "–"}</td>
                     <td>${issue.date || "–"}</td>
-                  </tr>
-                `).join('')}
+                  </tr>`).join('')}
               </tbody>
             </table>
           </div>
@@ -322,14 +296,14 @@
       renderFiltered(filteredIssues, groups, headerMap, searchValue);
     }
 
-    // CSV Upload & Initial-Parse
+    // --- CSV load ---
     document.getElementById("csvfile").addEventListener("change", function(e) {
       const file = e.target.files[0];
       if (!file) return;
       const reader = new FileReader();
       reader.onload = function(evt) {
         let text = evt.target.result;
-        text = text.replace(/,(\d)/g, '.$1');
+        text = text.replace(/,(\d)/g, '.$1'); // decimal comma -> dot
 
         const delimiter = detectDelimiter(text);
         const csvRows = parseCSV(text, delimiter);
@@ -346,12 +320,11 @@
         const aufgabeKey = Object.keys(headerMap).find(k => k.startsWith("aufgabe"));
         const stdKey = Object.keys(headerMap).find(k => k.startsWith("std"));
         const spKey = Object.keys(headerMap).find(k => k.startsWith("storypoints"));
-        const epicKey = Object.keys(headerMap).find(
-          k => k.replace(/[^a-z]/gi,'').includes('epicreferenz')
-        );
+        const epicKey = Object.keys(headerMap).find(k => k.replace(/[^a-z]/gi,'').includes('epicreferenz'));
         const dateKey = Object.keys(headerMap).find(k => k.startsWith("tag"));
 
-        document.getElementById("headerDebug").innerHTML = '<div class="headers">Detected columns: ' +
+        document.getElementById("headerDebug").innerHTML =
+          '<div class="headers">Detected columns: ' +
           Object.keys(headerMap).map(h => `<code>${headerMap[h]}</code>`).join(', ') + '</div>';
 
         if (!aufgabeKey || !stdKey || !spKey) {
@@ -363,16 +336,15 @@
           return;
         }
 
-        allRows = csvRows;
+        // Build issues
         allIssuesArr = [];
-        allGroups = {};
         csvRows.forEach(row => {
           const key = extractIssueKey(row[headerMap[aufgabeKey]]);
           if (!key) return;
           let val = (row[headerMap[stdKey]] || "0").replace(",", ".");
           let eff = parseFloat(val || "0");
           let sp = parseFloat(row[headerMap[spKey]]);
-          if (!isNaN(sp) && sp > 0) {
+          if (!isNaN(sp) && sp > 0) { // exclude epics (no estimate)
             let found = allIssuesArr.find(obj => obj.issue === key);
             if (!found) {
               found = {
@@ -380,7 +352,6 @@
                 totalEffort: 0,
                 storyPoints: sp,
                 effortPerSP: 0,
-                rows: [],
                 epic: epicKey ? row[headerMap[epicKey]] : "",
                 date: dateKey ? row[headerMap[dateKey]] : "",
                 task: row[headerMap[aufgabeKey]]
@@ -388,25 +359,19 @@
               allIssuesArr.push(found);
             }
             found.totalEffort += isNaN(eff) ? 0 : eff;
-            found.rows.push(row);
           }
         });
         allIssuesArr.forEach(issue => {
-          issue.effortPerSP = (issue.storyPoints && issue.storyPoints > 0) ?
-              (issue.totalEffort / issue.storyPoints) : null;
-          const sp = issue.storyPoints;
-          if (!allGroups[sp]) allGroups[sp] = [];
-          allGroups[sp].push(issue);
+          issue.effortPerSP = (issue.storyPoints && issue.storyPoints > 0)
+            ? (issue.totalEffort / issue.storyPoints) : null;
         });
 
-        // Epics-Filter Dropdown befüllen (mit Choices.js für Suche/Mehrfachauswahl)
+        // Fill Epic options + init Choices
         const epicVals = Array.from(new Set(allIssuesArr.map(i => i.epic).filter(Boolean))).sort();
         const epicSelElem = document.getElementById("epicFilter");
         fillSelectOptions(epicSelElem, epicVals);
-
-        // Choices.js neu initialisieren
-        if (window.epicChoices) window.epicChoices.destroy();
-        window.epicChoices = new Choices(epicSelElem, {
+        if (epicChoices) epicChoices.destroy();
+        epicChoices = new Choices(epicSelElem, {
           removeItemButton: true,
           searchResultLimit: 15,
           shouldSort: true,
@@ -418,17 +383,15 @@
 
         document.getElementById("filterPanel").style.display = "block";
         document.getElementById("searchBlock").style.display = "block";
-        document.getElementById("epicFilter").selectedIndex = -1;
         document.getElementById("fromDate").value = "";
         document.getElementById("toDate").value = "";
         document.getElementById("searchInput").value = "";
 
         updateVisualization(headerMap, [], null, null);
 
-        // Filter-Events (Choices.js holt Werte über .getValue(true))
+        // Unified handler
         const filterHandler = function() {
-          // Choices.js: getValue(true) für Array mit den gewählten Werten
-          const epicSel = window.epicChoices ? window.epicChoices.getValue(true) : [];
+          const epicSel = epicChoices ? epicChoices.getValue(true) : [];
           const fromDate = document.getElementById("fromDate").value ? new Date(document.getElementById("fromDate").value) : null;
           const toDate = document.getElementById("toDate").value ? new Date(document.getElementById("toDate").value) : null;
           const searchValue = document.getElementById("searchInput").value || "";
@@ -441,11 +404,55 @@
         document.getElementById("searchInput").oninput = filterHandler;
 
         document.getElementById("clearFilters").onclick = function() {
-          if (window.epicChoices) window.epicChoices.removeActiveItems();
+          if (epicChoices) epicChoices.removeActiveItems();
           document.getElementById("fromDate").value = "";
           document.getElementById("toDate").value = "";
           document.getElementById("searchInput").value = "";
+          document.getElementById("bulkEpicsInput").value = "";
+          document.getElementById("bulkFeedback").textContent = "";
           updateVisualization(headerMap, [], null, null, "");
+        };
+
+        // --- Bulk paste apply/clear ---
+        const bulkInput = document.getElementById("bulkEpicsInput");
+        const bulkFeedback = document.getElementById("bulkFeedback");
+        const applyBulk = () => {
+          const raw = (bulkInput.value || "").trim();
+          if (!raw) {
+            bulkFeedback.textContent = "No epics provided.";
+            return;
+          }
+          // Split by comma, semicolon, whitespace, or newline
+          const wanted = Array.from(new Set(
+            raw.split(/[\s,;]+/).map(s => s.trim()).filter(Boolean)
+          ));
+          const available = new Set(epicVals);
+          const matched = [];
+          const missed = [];
+          wanted.forEach(w => (available.has(w) ? matched.push(w) : missed.push(w)));
+
+          // Apply to Choices
+          if (epicChoices) {
+            epicChoices.removeActiveItems();
+            matched.forEach(v => epicChoices.setChoiceByValue(v));
+          }
+
+          // Feedback + trigger filter
+          const m = matched.length, x = missed.length;
+          bulkFeedback.textContent =
+            `Applied ${m} epic${m===1?"":"s"}${x?` • ${x} not found: ${missed.join(", ")}`:""}`;
+          filterHandler();
+        };
+
+        document.getElementById("bulkApply").onclick = applyBulk;
+        bulkInput.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter') { e.preventDefault(); applyBulk(); }
+        });
+        document.getElementById("bulkClear").onclick = () => {
+          bulkInput.value = "";
+          bulkFeedback.textContent = "";
+          if (epicChoices) epicChoices.removeActiveItems();
+          filterHandler();
         };
       };
       reader.readAsText(file, "utf-8");
